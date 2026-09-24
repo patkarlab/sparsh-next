@@ -33,7 +33,9 @@ bash jobs/probe_gpus.sh                   # GPU model and epoch time on each GPU
 qsub jobs/check_data.pbs                  # class list, duplicates, study confounding
 bash jobs/submit_experiments.sh           # five comparison runs, one GPU job each
 python scripts/compare_runs.py ~/sparsh_next_runs/{legacy,default,scaled,mask_sim,schedule}
-python scripts/ont_coverage.py --run ~/sparsh_next_runs/default /path/to/ont_csvs   # coverage of real samples
+python scripts/ont_coverage.py --run ~/sparsh_next_runs/default /path/to/ont_csvs \
+    --output ~/sparsh_next_runs/data_checks/ont_coverage.csv          # coverage and value type of real samples
+bash jobs/submit_experiments.sh wide scaled_wide scaled_wide_log      # runs matched to them (docs/EXPERIMENTS.md)
 qsub -v RUN_NAME=default,ONT_DIR=/path/to/ont_csvs,TRUTH=/path/to/truth.csv jobs/predict.pbs
 ```
 

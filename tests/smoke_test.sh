@@ -29,10 +29,38 @@ step train_new    python scripts/train.py --data_path "$TMP/data/train.pkl" --ou
 step train_legacy python scripts/train.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/run_legacy" \
                       --exclude_prefixes MPAL --n_folds 2 --epochs 3 --hidden_dims 32 16 --device cpu \
                       --imbalance legacy_upsample --train_sim mask --val_sim mask --coverage_mode schedule
+step train_wide   python scripts/train.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/run_wide" \
+                      --exclude_prefixes MPAL --n_folds 2 --epochs 3 --hidden_dims 32 16 --device cpu \
+                      --train_sim binary --val_sim binary --eval_sims binary oneread --cov_max 0.95 \
+                      --coverage_dist uniform --input_encoding scaled --val_coverages 0.1 0.5 0.9 \
+                      --eval_coverages 0.1 0.5 0.9
 step predict      python scripts/predict.py --model_dir "$TMP/run_new" --ont_dir "$TMP/data/ont" \
                       --ground_truth "$TMP/data/ground_truth.csv" --output_dir "$TMP/pred" --device cpu
-step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new" --output "$TMP/comparison.csv"
 step ont_coverage python scripts/ont_coverage.py --run "$TMP/run_new" "$TMP/data/ont" --output "$TMP/ont_coverage.csv"
+step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new" "$TMP/run_wide" \
+                      --ont_coverage "$TMP/ont_coverage.csv" --output "$TMP/comparison.csv"
+step simulation   python - <<'PY'
+import numpy as np
+import torch
+from models.corruption import corrupt_numpy, corrupt_torch
+beta = np.random.default_rng(0).random(200000).astype(np.float32)
+for sim in ("binary", "oneread"):
+    for f in (0.05, 0.5, 0.9):
+        out = corrupt_numpy(beta, f, sim, np.random.default_rng(1))
+        obs = np.isfinite(out)
+        assert abs(obs.mean() - f) < 0.01, (sim, f, obs.mean())
+        assert set(np.unique(out[obs])) <= {0.0, 1.0}, (sim, f)
+        t = corrupt_torch(torch.from_numpy(beta[None, :]), torch.tensor([[f]]), sim)
+        tobs = ~torch.isnan(t)
+        assert abs(float(tobs.float().mean()) - f) < 0.01, (sim, f)
+        assert set(torch.unique(t[tobs]).tolist()) <= {0.0, 1.0}, (sim, f)
+# a majority call is right more often than a single read where beta is far from 0.5
+far = (beta < 0.2) | (beta > 0.8)
+agree = {sim: np.nanmean(np.where(far, corrupt_numpy(beta, 0.9, sim, np.random.default_rng(2)) == (beta > 0.5), np.nan))
+         for sim in ("binary", "oneread")}
+assert agree["binary"] > agree["oneread"], agree
+print("simulation ok", agree)
+PY
 step duplicates   python - "$TMP" <<'PY'
 import sys
 import numpy as np
@@ -73,7 +101,12 @@ m = pd.read_csv(f"{tmp}/run_new/cv_metrics_by_condition.csv")
 assert {"dense", "reads_0.20", "mask_0.20"} <= set(m["condition"])
 c = pd.read_csv(f"{tmp}/comparison.csv", index_col=0)
 assert "callable_share_at_accuracy_0.98" in set(c["metric"]), "calibration-free table missing"
-assert not any(str(i).startswith(("dense", "mask_")) for i in c.index), "only reads_* rows by default"
+assert not any(str(i).startswith(("dense", "mask_")) for i in c.index), "only nanopore rows by default"
+for row in ("mean over reads_*", "your ONT samples, binary_*", "mean over oneread_*", "binary_0.90"):
+    assert row in c.index, f"row {row} missing from the comparison"
+w = pd.read_csv(f"{tmp}/run_wide/cv_metrics_by_condition.csv")
+assert set(w["condition"]) == {"dense", "binary_0.10", "binary_0.50", "binary_0.90",
+                               "oneread_0.10", "oneread_0.50", "oneread_0.90"}, set(w["condition"])
 o = pd.read_csv(f"{tmp}/ont_coverage.csv")
 assert len(o) == 8 and o["error"].isna().all(), o
 assert o["coverage_pct"].between(10, 40).all() and (o["share_0_or_1"] > 0.8).all(), o

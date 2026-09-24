@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO))
 
 from data.dataset import encode_labels, filter_classes, load_label_map, load_training_data, subset  # noqa: E402
 from evaluation.metrics import confusion_frame, predictions_frame, recall_by_class, summarize_probs  # noqa: E402
-from models.corruption import COVERAGE_MODES, SIMULATIONS  # noqa: E402
+from models.corruption import COVERAGE_DISTS, COVERAGE_MODES, SIMULATIONS  # noqa: E402
 from models.sparse_nn import ENCODINGS, softmax_np  # noqa: E402
 from training.reproducibility import generate_run_id, get_environment_metadata, set_deterministic_mode  # noqa: E402
 from training.trainer import (IMBALANCE_MODES, TrainConfig, cross_validate,  # noqa: E402
@@ -80,6 +80,8 @@ def parse_args():
     s = p.add_argument_group("sparsity simulation")
     s.add_argument("--train_sim", choices=SIMULATIONS, default="reads")
     s.add_argument("--coverage_mode", choices=COVERAGE_MODES, default="random")
+    s.add_argument("--coverage_dist", choices=COVERAGE_DISTS, default="loguniform",
+                   help="random mode: how the observed fraction is drawn between cov_min and cov_max")
     s.add_argument("--cov_min", type=float, default=0.02, help="random mode: lowest observed fraction")
     s.add_argument("--cov_max", type=float, default=0.5, help="random mode: highest observed fraction")
     s.add_argument("--mask_start", type=float, default=0.97, help="schedule mode: first-epoch masked fraction")
@@ -91,10 +93,13 @@ def parse_args():
     v.add_argument("--val_sim", choices=SIMULATIONS, default=None, help="Default: same as --train_sim")
     v.add_argument("--val_coverages", type=float, nargs="+", default=[0.05, 0.1, 0.2, 0.3])
     v.add_argument("--eval_coverages", type=float, nargs="+", default=[0.03, 0.05, 0.1, 0.2, 0.3])
+    v.add_argument("--eval_sims", choices=SIMULATIONS, nargs="+", default=["reads", "mask"],
+                   help="Simulations scored on the outer folds, each at every --eval_coverages")
     v.add_argument("--eval_seed", type=int, default=12345, help="Keep fixed so runs are scored on identical inputs")
     v.add_argument("--no_calibration", action="store_true", help="Skip temperature scaling")
     v.add_argument("--threshold", type=float, default=0.90, help="Confidence threshold for callable metrics")
-    v.add_argument("--primary_condition", default="reads_0.20", help="Condition for confusion matrices")
+    v.add_argument("--primary_condition", default="auto",
+                   help="Condition for confusion matrices; auto = first --eval_sims at the coverage nearest 0.2")
 
     o = p.add_argument_group("outputs and hardware")
     o.add_argument("--no_fold_models", action="store_true", help="Do not save fold weights (saves disk)")
@@ -133,7 +138,11 @@ def main():
     for cov in list(args.val_coverages) + list(args.eval_coverages) + [args.cov_min, args.cov_max]:
         if not 0.0 < cov < 1.0:
             sys.exit(f"Coverages must be observed fractions between 0 and 1 (got {cov})")
-    condition_names = [c[0] for c in evaluation_conditions(args.eval_coverages)]
+    conditions = evaluation_conditions(args.eval_coverages, args.eval_sims)
+    condition_names = [c[0] for c in conditions]
+    if args.primary_condition == "auto":
+        sim_rows = [c for c in conditions if c[1] == args.eval_sims[0]]
+        args.primary_condition = min(sim_rows, key=lambda c: abs(c[2] - 0.2))[0] if sim_rows else "dense"
     if args.primary_condition not in condition_names:
         sys.exit(f"--primary_condition {args.primary_condition} is not one of {condition_names}")
 
@@ -173,10 +182,12 @@ def main():
         early_stopping_patience=args.early_stopping_patience, lr_scheduler_patience=args.lr_scheduler_patience,
         lr_scheduler_factor=args.lr_scheduler_factor, samples_per_class_per_batch=args.samples_per_class_per_batch,
         focal_gamma=args.focal_gamma, label_smoothing=args.label_smoothing, imbalance=args.imbalance,
-        train_sim=args.train_sim, coverage_mode=args.coverage_mode, cov_min=args.cov_min, cov_max=args.cov_max,
+        train_sim=args.train_sim, coverage_mode=args.coverage_mode, coverage_dist=args.coverage_dist,
+        cov_min=args.cov_min, cov_max=args.cov_max,
         mask_start=args.mask_start, mask_end=args.mask_end, n_folds=args.n_folds,
         inner_val_frac=args.inner_val_frac, val_sim=args.val_sim or args.train_sim,
         val_coverages=tuple(args.val_coverages), eval_coverages=tuple(args.eval_coverages),
+        eval_sims=tuple(args.eval_sims),
         eval_seed=args.eval_seed, calibrate=not args.no_calibration,
         clip_observed=(0.05, 0.95) if args.train_sim == "mask" else None,
         seed=args.seed, device=args.device, data_on_gpu=args.data_on_gpu,

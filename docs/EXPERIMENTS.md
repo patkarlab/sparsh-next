@@ -46,10 +46,40 @@ Two synthetic cohorts (10 classes of 6–300 samples, 4,000 CpGs, noisy betas wi
 
 Synthetic data show mechanisms, not the size of the effects on your cohort; the five runs decide.
 
+## Second round: matched to the nanopore files
+
+`scripts/ont_coverage.py` on the lab's 299 nanopore samples showed two differences from what the first five runs assumed:
+
+- **Coverage** is far higher: median 38% of the model's CpGs (range 3.8–87%). Two thirds of the samples lie above 30%, the highest coverage the first round scored, and 83 lie above 50%, the top of its training range.
+- **Values** are always exactly 0 or 1. The `reads` simulation reports the methylated fraction (0, 1/3, 1/2, ...) wherever a CpG has two or more reads, which is common at these depths.
+
+Three runs address this: `bash jobs/submit_experiments.sh wide scaled_wide scaled_wide_log`.
+
+| Recipe | Encoding | Training coverage | Question it answers |
+| --- | --- | --- | --- |
+| `wide` | midpoint | 2–95%, uniform | Baseline at the real coverage and value type |
+| `scaled_wide` | scaled | 2–95%, uniform | Encoding, at the real coverage |
+| `scaled_wide_log` | scaled | 2–95%, log-uniform (more weight on low coverage) | How to spread training over coverage |
+
+All three train on `binary` values: one 0/1 call per covered CpG, the majority of its reads, and a random call when the reads split evenly (which covers either tie rule of the nanopore pipeline). Early stopping and temperature use inner validation at 5–90% coverage. The outer folds are scored at 5, 10, 20, 30, 50, 70 and 90% coverage, both as `binary` and as `oneread` (the call of a single read per CpG, the right simulation if the pipeline keeps one read per CpG).
+
+Compare them with the cohort's coverage mix:
+
+```bash
+python scripts/compare_runs.py ~/sparsh_next_runs/{wide,scaled_wide,scaled_wide_log} \
+    --ont_coverage ~/sparsh_next_runs/data_checks/ont_coverage.csv
+```
+
+The row *your ONT samples* places every sample's coverage between the two nearest evaluated coverages, interpolates the metric there and averages: the value expected on this cohort, computed from coverage alone.
+
+## Scoring on real nanopore samples
+
+Keep a labelled nanopore cohort for one blinded scoring of the chosen model. Every choice (recipe, threshold, preprocessing) is made on cross-validation and on label-free properties of the nanopore files, such as coverage and value type. Run `jobs/predict.pbs` without `TRUTH`; whoever holds the labels scores `predictions.csv`. Comparing several models on the cohort turns it into a selection set and makes its accuracy optimistic; if that is needed, hold part of the cohort back untouched.
+
 ## After choosing a recipe
 
 - **Coverage range:** set `--cov_min` and `--cov_max` (random mode) to span your ONT coverage distribution with some margin, for example its 5th percentile halved to its 95th percentile doubled.
-- **Deployment model:** `predict.py` uses the fold ensemble by default. `RECIPE=final` also trains one model on all samples (minus an inner split); compare both on the ONT cohort with `--use ensemble` and `--use final`.
+- **Deployment model:** `predict.py` uses the fold ensemble by default, the models cross-validation evaluated. `RECIPE=final` also trains one model on all samples (minus an inner split); cross-validation cannot score it, so choose between the two before any blinded scoring.
 - **Loss settings:** label smoothing (`--label_smoothing 0`) and focal gamma (`--focal_gamma 0` or `1`) make probabilities less confident; temperature scaling corrects part of that. Worth one comparison each, passed through `EXTRA_ARGS`, for example `qsub -v RECIPE=default,RUN_NAME=default_ls0,EXTRA_ARGS="--label_smoothing 0" jobs/train.pbs`.
 - **Width:** `--hidden_dims 2048 1024 512` against the default `1024 512 256`, if GPU memory allows (`EXTRA_ARGS="--hidden_dims 2048 1024 512"`).
-- **Known limitation:** an observed value of exactly 0.5 (one of two reads methylated) is encoded like a missing CpG, about 1–3% of observed CpGs at 10–30% coverage.
+- **Known limitation:** an observed value of exactly 0.5 (one of two reads methylated) is encoded like a missing CpG, about 1–3% of observed CpGs at 10–30% coverage with the `reads` simulation. Files with 0/1 values (`binary`, `oneread`) never contain 0.5.

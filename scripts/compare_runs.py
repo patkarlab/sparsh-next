@@ -2,14 +2,20 @@
 """
 Compare SPARSH-next runs side by side.
 
-    python scripts/compare_runs.py ~/sparsh_next_runs/{legacy,default,scaled} --output comparison.csv
+    python scripts/compare_runs.py ~/sparsh_next_runs/{wide,scaled_wide} \
+        --ont_coverage ~/sparsh_next_runs/data_checks/ont_coverage.csv --output comparison.csv
 
 SPARSH-next classifies nanopore samples only, so the tables show the simulated
-nanopore conditions: reads_<f>, where a fraction f of the model's CpGs has at
-least one read and each reports the methylated fraction of its reads (mostly
-0 or 1). --all_conditions adds the dense array profile and the mask_*
+nanopore conditions, named <simulation>_<f>, where a fraction f of the model's
+CpGs is covered: reads_* (the methylated fraction of the reads at each CpG),
+binary_* (one 0/1 call per CpG from its reads) and oneread_* (the call of a
+single read). --all_conditions adds the dense array profile and the mask_*
 conditions (array beta values at the covered CpGs), which no nanopore run
-produces.
+produces. For each simulation, a row gives the mean over its coverages, and
+with --ont_coverage (the CSV written by scripts/ont_coverage.py) a second row
+gives the value expected on those samples: each sample's coverage is placed
+between the two nearest evaluated coverages and the metric interpolated there.
+Only coverage is used, never labels.
 
 The last two tables come from each run's saved predictions: the share of
 samples that can be called, most confident first, while at least
@@ -31,7 +37,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-MEAN_ROW = "mean over reads_*"
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from models.corruption import READ_SIMS  # noqa: E402
+
+
+def split_condition(name: str):
+    """'binary_0.30' -> ('binary', 0.30); 'dense' -> ('dense', None)."""
+    sim, _, cov = str(name).rpartition("_")
+    try:
+        return sim, float(cov)
+    except ValueError:
+        return str(name), None
 
 
 def callable_at_accuracy(confidence: np.ndarray, correct: np.ndarray, target: float):
@@ -56,15 +74,33 @@ def callable_at_accuracy(confidence: np.ndarray, correct: np.ndarray, target: fl
 def trained_coverage(t: dict) -> str:
     if t["coverage_mode"] == "schedule":
         lo, hi = 1.0 - t["mask_start"], 1.0 - t["mask_end"]
-    else:
-        lo, hi = t["cov_min"], t["cov_max"]
-    return f"{t['coverage_mode']} {round(100 * lo, 2):g}-{round(100 * hi, 2):g}%"
+        return f"schedule {round(100 * lo, 2):g}-{round(100 * hi, 2):g}%"
+    lo, hi = t["cov_min"], t["cov_max"]
+    dist = "uniform" if t.get("coverage_dist", "loguniform") == "uniform" else "log"
+    return f"{round(100 * lo, 2):g}-{round(100 * hi, 2):g}% {dist}"
 
 
-def with_mean(table: pd.DataFrame) -> pd.DataFrame:
-    reads = [c for c in table.index if str(c).startswith("reads_")]
-    if reads:
-        table.loc[MEAN_ROW] = table.loc[reads].mean()
+def add_summary_rows(table: pd.DataFrame, ont_cov, with_mean=True) -> pd.DataFrame:
+    """Mean over each nanopore simulation's coverages and, if given, the value expected on the ONT samples."""
+    rows = {}
+    for sim in READ_SIMS:
+        members = [(c, split_condition(c)[1]) for c in table.index if split_condition(c)[0] == sim]
+        members = [(c, f) for c, f in members if f is not None]
+        if not members:
+            continue
+        members.sort(key=lambda m: m[1])
+        names, covs = [m[0] for m in members], np.array([m[1] for m in members])
+        if with_mean:
+            rows[f"mean over {sim}_*"] = table.loc[names].mean()
+        if ont_cov is not None and len(ont_cov):
+            expected = {}
+            for run in table.columns:
+                values = table.loc[names, run].to_numpy(dtype=float)
+                ok = np.isfinite(values)
+                expected[run] = float(np.mean(np.interp(ont_cov, covs[ok], values[ok]))) if ok.any() else np.nan
+            rows[f"your ONT samples, {sim}_*"] = pd.Series(expected)
+    for label, row in rows.items():
+        table.loc[label] = row
     return table
 
 
@@ -77,12 +113,23 @@ def main():
                    help="Accuracy of calls for the calibration-free callable share (default 0.98)")
     p.add_argument("--all_conditions", action="store_true",
                    help="Also show the dense array profile and the mask_* conditions")
+    p.add_argument("--ont_coverage", default=None,
+                   help="CSV from scripts/ont_coverage.py; adds the value expected at those samples' coverages")
     p.add_argument("--output", default=None, help="Optional CSV with all tables stacked")
     args = p.parse_args()
     if not 0.0 < args.target_accuracy <= 1.0:
         sys.exit("--target_accuracy must be between 0 and 1, e.g. 0.98")
 
-    tables, run_dirs, settings, keys, splits = {}, {}, [], set(), set()
+    ont_cov = None
+    if args.ont_coverage:
+        oc = pd.read_csv(args.ont_coverage)
+        if "coverage_pct" not in oc.columns:
+            sys.exit(f"{args.ont_coverage} has no coverage_pct column (write it with scripts/ont_coverage.py)")
+        ont_cov = pd.to_numeric(oc["coverage_pct"], errors="coerce").dropna().to_numpy() / 100.0
+        print(f"ONT coverage from {args.ont_coverage}: {len(ont_cov)} samples, median {100 * np.median(ont_cov):.1f}% "
+              f"(range {100 * ont_cov.min():.1f}-{100 * ont_cov.max():.1f}%)")
+
+    tables, run_dirs, settings, data_keys, eval_keys, eval_grids, splits = {}, {}, [], set(), set(), set(), set()
     names = [Path(r).name for r in args.runs]
     for run, name in zip(args.runs, names):
         run = Path(run)
@@ -93,7 +140,7 @@ def main():
             sys.exit(f"{f} not found (is this a finished SPARSH-next run?)")
         table = pd.read_csv(f).set_index("condition")
         if not args.all_conditions:
-            table = table[table.index.str.startswith("reads_")]
+            table = table[[split_condition(c)[0] in READ_SIMS for c in table.index]]
         tables[name], run_dirs[name] = table, run
         cfg = json.loads((run / "config.json").read_text())
         t, m, d = cfg["training"], cfg["model"], cfg["data"]
@@ -101,20 +148,34 @@ def main():
                          "train_sim": t["train_sim"], "trained_coverage": trained_coverage(t),
                          "calibrated": t["calibrate"], "n_samples": d["n_samples"], "n_classes": m["n_classes"],
                          "median_best_epoch": pd.Series([r["best_epoch"] for r in cfg["cv_folds"]]).median()})
-        keys.add((d["data_path"], d["n_samples"], d["n_cpgs"], d.get("cpg_list"),
-                  json.dumps(d.get("class_counts"), sort_keys=True), d.get("groups_file"), d.get("group_col"),
-                  t["eval_seed"], tuple(t["eval_coverages"])))
+        data_keys.add((d["data_path"], d["n_samples"], d["n_cpgs"], d.get("cpg_list"),
+                       json.dumps(d.get("class_counts"), sort_keys=True), d.get("groups_file"), d.get("group_col")))
+        eval_keys.add(t["eval_seed"])
+        eval_grids.add((tuple(t.get("eval_sims", ["reads", "mask"])), tuple(t["eval_coverages"])))
         splits.add((t["seed"], t["n_folds"]))
 
     print(pd.DataFrame(settings).to_string(index=False))
-    if len(keys) > 1:
-        print("\nWARNING: runs differ in data, CpG set, classes, grouping, eval_seed or evaluation coverages; "
+    if len(data_keys) > 1 or len(eval_keys) > 1:
+        print("\nWARNING: runs differ in data, CpG set, classes, grouping or eval_seed; "
               "they are not directly comparable.")
     elif len(splits) > 1:
         print("\nNote: runs use different fold splits (seed, fold count or grouping). Samples and evaluation "
               "inputs are identical, so differences include run-to-run noise; this is how to measure that noise.")
+    if len(eval_grids) > 1:
+        print("\nNote: runs were scored on different simulations or coverages; a blank cell means that run "
+              "was not scored on that row.")
     if not args.all_conditions:
-        print("\nSimulated nanopore conditions only (reads_*); --all_conditions adds dense and mask_*.")
+        print("\nSimulated nanopore conditions only; --all_conditions adds dense and mask_*.")
+    if ont_cov is not None:
+        for sim in READ_SIMS:
+            covs = sorted({split_condition(c)[1] for t in tables.values() for c in t.index
+                           if split_condition(c)[0] == sim and split_condition(c)[1] is not None})
+            if covs:
+                out = int(((ont_cov < covs[0]) | (ont_cov > covs[-1])).sum())
+                if out:
+                    verb = "lies" if out == 1 else "lie"
+                    print(f"Note: {out} of {len(ont_cov)} ONT samples {verb} outside the evaluated {sim}_* coverages "
+                          f"({100 * covs[0]:g}-{100 * covs[-1]:g}%) and take the value at the nearest end.")
 
     stacked = []
     for metric in args.metrics:
@@ -125,7 +186,7 @@ def main():
         lacking = [name for name in tables if name not in cols]
         if lacking:
             print(f"\n(metric {metric} is missing for: {lacking}; a different --threshold?)")
-        table = with_mean(pd.DataFrame(cols))
+        table = add_summary_rows(pd.DataFrame(cols), ont_cov)
         print(f"\n{metric}")
         print(table.to_string(float_format=lambda v: f"{v:.3f}"))
         stacked.append(table.assign(metric=metric))
@@ -147,7 +208,7 @@ def main():
     if missing:
         print(f"\n(saved predictions missing, left blank: {missing[:5]})")
     label = f"{100 * target:g}%"
-    share_table = with_mean(pd.DataFrame(shares))
+    share_table = add_summary_rows(pd.DataFrame(shares), ont_cov)
     cutoff_table = pd.DataFrame(cutoffs)
     print(f"\ncallable share at {label} accuracy of calls (most confident first; does not depend on calibration)")
     print(share_table.to_string(float_format=lambda v: f"{v:.3f}"))

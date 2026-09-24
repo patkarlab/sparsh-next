@@ -38,7 +38,7 @@ import torch.optim as optim
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
 from data.dataset import legacy_masked_upsample
-from models.corruption import corrupt_rows, corrupt_torch, sample_observed_fraction
+from models.corruption import READ_SIMS, corrupt_rows, corrupt_torch, sample_observed_fraction
 from models.sparse_nn import SparseNN, predict_logits
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class TrainConfig:
     # sparsity simulated during training
     train_sim: str = "reads"
     coverage_mode: str = "random"
+    coverage_dist: str = "loguniform"
     cov_min: float = 0.02
     cov_max: float = 0.5
     mask_start: float = 0.97
@@ -74,9 +75,10 @@ class TrainConfig:
     val_sim: str = "reads"
     val_coverages: Tuple[float, ...] = (0.05, 0.1, 0.2, 0.3)
     eval_coverages: Tuple[float, ...] = (0.03, 0.05, 0.1, 0.2, 0.3)
+    eval_sims: Tuple[str, ...] = ("reads", "mask")
     eval_seed: int = 12345
     calibrate: bool = True
-    # clip applied to read-level (ONT-like) inputs in CV exactly as predict.py applies it to ONT files;
+    # clip applied to read-level (ONT-like: READ_SIMS) inputs in CV exactly as predict.py applies it to ONT files;
     # set to (0.05, 0.95) for mask-trained recipes, None otherwise (scripts/train.py decides)
     clip_observed: Optional[Tuple[float, float]] = None
     # hardware and reproducibility
@@ -266,7 +268,7 @@ def make_inner_sets(X: np.ndarray, sample_ids: np.ndarray, cfg: "TrainConfig") -
     sets = []
     for c in cfg.val_coverages:
         Xc = corrupt_rows(X, sample_ids, c, cfg.val_sim, cfg.seed, salt=1)
-        sets.append(clip_observed(Xc, cfg.clip_observed) if cfg.val_sim == "reads" else Xc)
+        sets.append(clip_observed(Xc, cfg.clip_observed) if cfg.val_sim in READ_SIMS else Xc)
     return sets
 
 
@@ -329,7 +331,7 @@ def train_one_model(
             yb = y_store.index_select(0, idx).to(device, non_blocking=True)
             frac = sample_observed_fraction(
                 len(batch), cfg.coverage_mode, epoch, cfg.epochs,
-                cfg.cov_min, cfg.cov_max, cfg.mask_start, cfg.mask_end, device,
+                cfg.cov_min, cfg.cov_max, cfg.mask_start, cfg.mask_end, device, cfg.coverage_dist,
             )
             xb = corrupt_torch(xb, frac, cfg.train_sim)
             optimizer.zero_grad(set_to_none=True)
@@ -392,10 +394,11 @@ def train_one_model(
 # Evaluation conditions and nested cross-validation
 # =============================================================================
 
-def evaluation_conditions(eval_coverages: Sequence[float]) -> List[Tuple[str, Optional[str], Optional[float]]]:
+def evaluation_conditions(eval_coverages: Sequence[float], eval_sims: Sequence[str] = ("reads", "mask")
+                          ) -> List[Tuple[str, Optional[str], Optional[float]]]:
     """(name, simulation, observed fraction); 'dense' means the array profile as measured."""
     conds = [("dense", None, None)]
-    for sim in ("reads", "mask"):
+    for sim in eval_sims:
         for c in eval_coverages:
             conds.append((f"{sim}_{c:.2f}", sim, float(c)))
     names = [c[0] for c in conds]
@@ -417,7 +420,7 @@ def cross_validate(
 ) -> Dict:
     """Nested CV. Returns out-of-fold logits per evaluation condition and per-fold records."""
     device = resolve_device(cfg.device)
-    conditions = evaluation_conditions(cfg.eval_coverages)
+    conditions = evaluation_conditions(cfg.eval_coverages, cfg.eval_sims)
     folds = split_indices(y, groups, cfg.n_folds, cfg.seed)
     n = len(y)
     logits = {name: np.full((n, n_classes), np.nan, dtype=np.float32) for name, _, _ in conditions}
@@ -443,7 +446,7 @@ def cross_validate(
 
         for name, sim, frac in conditions:
             Xc = corrupt_rows(X[te], sample_ids[te], frac, sim, cfg.eval_seed, salt=2)
-            if sim == "reads":
+            if sim in READ_SIMS:
                 Xc = clip_observed(Xc, cfg.clip_observed)
             logits[name][te] = predict_logits(model, Xc, device, cfg.eval_batch_size)
             del Xc

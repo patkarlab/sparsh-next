@@ -76,6 +76,15 @@ Development line in a separate repository. Changes are listed against v0.1.0.
   keeps the first column (what a pandas reader does implicitly) and `error` refuses the file.
   The loader reports how many probes were repeated and whether their copies agree;
   `ont_coverage.py` summarises this per folder. `jobs/predict.pbs` accepts `EXTRA_ARGS`.
+- Simulations `binary` (one 0/1 call per covered CpG: the majority of its reads, a random call on
+  an even split) and `oneread` (the call of a single read per covered CpG), for nanopore files whose
+  values are always 0 or 1. `--eval_sims` chooses the simulations scored on the outer folds (default
+  `reads mask`, as before); `--coverage_dist uniform` draws the training coverage uniformly instead of
+  log-uniformly; `--primary_condition auto`. The `reads` and `mask` simulations are unchanged.
+- Recipes `wide`, `scaled_wide` and `scaled_wide_log` (binary values, coverage 2-95%, scored at 5-90%);
+  `jobs/submit_experiments.sh` takes a list of recipes.
+- `scripts/compare_runs.py --ont_coverage`: the value of each metric expected on a nanopore cohort,
+  interpolated at every sample's coverage (coverage only, no labels); a mean row per simulation.
 
 ### Removed
 

@@ -12,7 +12,8 @@
 #   cd ~/projects/sparsh-next
 #   qsub -v RECIPE=default jobs/train.pbs
 # RECIPE is one of: default, legacy, scaled, mask_sim, schedule (the five comparison runs),
-# scaled_schedule, or final (default recipe plus one extra model on all samples). See docs/EXPERIMENTS.md.
+# scaled_schedule, or final (default recipe plus one extra model on all samples); or, matched to the lab's
+# nanopore files (0/1 values, coverage up to 87%): wide, scaled_wide, scaled_wide_log. See docs/EXPERIMENTS.md.
 # Optional: RUN_NAME=... (folder name; defaults to the recipe name), SEED=... (default 42), and
 # EXTRA_ARGS="..." for any other scripts/train.py option, for example
 #   qsub -v RECIPE=default,RUN_NAME=default_seed43,SEED=43 jobs/train.pbs
@@ -27,6 +28,12 @@ require_file DATA_PATH "$DATA_PATH"
 [ -z "$EXCLUDE_IDS" ] || require_file EXCLUDE_IDS "$EXCLUDE_IDS"
 [ -z "$GROUPS_FILE" ] || require_file GROUPS_FILE "$GROUPS_FILE"
 
+# Second round, matched to the lab's nanopore files: one 0/1 call per covered CpG, coverage drawn from
+# 2-95%, inner validation and outer scoring from 5 to 90% coverage, scored as 0/1 calls (binary) and as
+# single-read calls (oneread).
+WIDE="--train_sim binary --val_sim binary --eval_sims binary oneread --cov_min 0.02 --cov_max 0.95 \
+--val_coverages 0.05 0.1 0.2 0.3 0.5 0.7 0.9 --eval_coverages 0.05 0.1 0.2 0.3 0.5 0.7 0.9"
+
 RECIPE="${RECIPE:-default}"
 case "$RECIPE" in
   default)  RECIPE_ARGS="" ;;
@@ -36,6 +43,9 @@ case "$RECIPE" in
   schedule) RECIPE_ARGS="--coverage_mode schedule" ;;
   scaled_schedule) RECIPE_ARGS="--input_encoding scaled --coverage_mode schedule" ;;
   final)    RECIPE_ARGS="--final_model" ;;
+  wide)            RECIPE_ARGS="$WIDE --coverage_dist uniform" ;;
+  scaled_wide)     RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled" ;;
+  scaled_wide_log) RECIPE_ARGS="$WIDE --coverage_dist loguniform --input_encoding scaled" ;;
   *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
 esac
 RUN_NAME="${RUN_NAME:-$RECIPE}"
