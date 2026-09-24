@@ -1,10 +1,60 @@
 # Changelog
 
-All notable changes to SPARSH are documented in this file.
+All notable changes to SPARSH and SPARSH-next are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/). Versions
 below 1.0.0 may introduce breaking changes in any minor release.
+
+## [0.2.0.dev0] — unreleased (SPARSH-next)
+
+Development line in a separate repository. Changes are listed against v0.1.0.
+
+### Changed
+
+- **Class imbalance.** Balanced batch sampler without class weights by default.
+  In v0.1.0, `--upsample_minority` masked minority copies twice (sparsity became a
+  class signal) and made the focal-loss weights uniform; without it, the weights and
+  the sampler corrected imbalance twice. Both variants remain selectable with
+  `--imbalance legacy_upsample` and `--imbalance sampler_alpha`.
+- **Sparsity simulation.** Read-level simulation (`--train_sim reads`): Poisson reads
+  per CpG and the methylated fraction of the reads as the value, which is what a
+  1-2x ONT run reports. Coverage drawn per sample, log-uniform 2-50%
+  (`--coverage_mode random`). The v0.1.0 masking and schedule remain available.
+- **Missing values** stay NaN until the model's input encoding (`--input_encoding
+  midpoint`, the v0.1.0 fill of 0.5, or `scaled`).
+- **Nested cross-validation.** An inner validation split of each training fold drives
+  the learning-rate schedule, early stopping, checkpoint choice and temperature. The
+  outer fold is scored once.
+- **Evaluation.** Outer folds are scored on dense arrays and on simulated ONT reads and
+  masking at 3, 5, 10, 20 and 30% coverage. Corruption is seeded per Sample_ID, so all
+  runs are scored on identical inputs.
+- **Calibration.** Temperature scaling fitted on the inner validation split.
+- **Deployment.** Fold models are saved and `scripts/predict.py` averages them, so the
+  deployed predictor is the one cross-validation evaluated.
+- **Grouped CV.** `--groups_file` or `--group_col`; stratified and reproducible on every
+  scikit-learn version.
+- **Labels.** Merges live in `configs/label_map.json`, are saved with each model and
+  applied to ONT ground truth. `--exclude_classes` is exact; `--exclude_prefixes` is explicit.
+- **ONT prediction** (`scripts/predict.py`, replaces `infer_and_evaluate.py`): one
+  loader that rejects multi-row files, percentages, missing row names and duplicated
+  probes; out-of-scheme truth labels reported and counted as errors; accuracy,
+  balanced accuracy, top-2, callable share and accuracy at the threshold, by coverage.
+
+### Added
+
+- `scripts/check_data.py`: duplicate clusters, Source_Dataset confounding,
+  platform-specific missingness, class list after the label map.
+- `scripts/compare_runs.py`: runs side by side, with a comparability check.
+- `jobs/settings.sh`, `jobs/train.pbs` (RECIPE=default|legacy|scaled|mask_sim|schedule),
+  `jobs/check_data.pbs`, `jobs/predict.pbs`, `jobs/submit_experiments.sh`.
+- `tests/smoke_test.sh`: the whole pipeline on synthetic data in about a minute.
+- `docs/SETUP.md`, `docs/EXPERIMENTS.md`.
+
+### Removed
+
+- Optuna tuning, binary mode and feature selection (not used in the reference runs).
+- Hard-coded status lines in the training log.
 
 ## [0.1.0] — 2026-06-15
 
