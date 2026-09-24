@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N sparsh_next
 #PBS -q a40
-#PBS -l select=1:ncpus=8:ngpus=1:mem=48gb
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
 #PBS -l walltime=12:00:00
 #PBS -j oe
 # Resources as in the lab's working job (train_focal_fast.pbs). The a40 queue runs at most 2 GPU
