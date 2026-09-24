@@ -223,15 +223,17 @@ def main():
     labels = sorted(set(ev["true_label"]) | set(ev["prediction"]))
     cm = confusion_frame(ev["true_label"], ev["prediction"], labels)
     cm.to_csv(out / "confusion_matrix.csv")
-    try:
+    try:  # the figure is optional; a plotting problem must never stop the evaluation
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         size = max(8, 0.45 * len(labels))
         fig, ax = plt.subplots(figsize=(size, size))
         ax.imshow(cm.to_numpy(), cmap="Blues")
-        ax.set_xticks(range(len(labels)), labels, rotation=90, fontsize=7)
-        ax.set_yticks(range(len(labels)), labels, fontsize=7)
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=90, fontsize=7)
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=7)
         for i in range(len(labels)):
             for j in range(len(labels)):
                 v = cm.iat[i, j]
@@ -242,8 +244,8 @@ def main():
         plt.tight_layout()
         plt.savefig(out / "confusion_matrix.png", dpi=150)
         plt.close(fig)
-    except ImportError:
-        pass
+    except Exception as e:
+        print(f"(confusion_matrix.png not drawn: {e})")
 
     with open(out / "summary_metrics.json", "w") as f:
         json.dump(summary, f, indent=2)

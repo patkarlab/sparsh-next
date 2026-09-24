@@ -31,7 +31,10 @@ def set_deterministic_mode(seed: int = 42) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:  # PyTorch older than 1.11 has no warn_only
+        logger.warning("This PyTorch version cannot warn-only on non-deterministic kernels; left unset")
     if os.environ.get("CUBLAS_WORKSPACE_CONFIG") is None and torch.cuda.is_available():
         logger.warning("CUBLAS_WORKSPACE_CONFIG is not set; GPU matrix products may not be deterministic "
                        "(the PBS scripts set it to :4096:8)")
