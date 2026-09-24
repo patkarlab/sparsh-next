@@ -93,7 +93,7 @@ def predictions_frame(
     data["confidence"] = probs[np.arange(len(probs)), order[:, 0]]
     if true_labels is not None:
         data["correct"] = [int(t == p) for t, p in zip(true_labels, data["prediction"])]
-    for rank in (1, 2):
+    for rank in range(1, min(3, probs.shape[1])):
         data[f"top{rank + 1}_class"] = [names[i] for i in order[:, rank]]
         data[f"top{rank + 1}_prob"] = probs[np.arange(len(probs)), order[:, rank]]
     df = pd.DataFrame(data)

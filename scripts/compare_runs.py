@@ -6,9 +6,10 @@ Compare SPARSH-next runs side by side.
         --metrics balanced_accuracy accuracy callable_share_0.90 --output runs/comparison.csv
 
 Rows are evaluation conditions (dense arrays; simulated ONT reads or masking
-at each coverage); columns are runs. Runs are comparable because every run
-scores the same outer folds on identically corrupted inputs, provided the data,
-seed, fold count and eval_seed are the same (checked below).
+at each coverage); columns are runs. Every sample's corrupted input depends only
+on its Sample_ID, the condition and eval_seed, so runs on the same data are scored
+on identical inputs. With the same seed, fold count and grouping they also share
+the same folds (checked below).
 """
 
 import argparse
@@ -27,26 +28,34 @@ def main():
     p.add_argument("--output", default=None, help="Optional CSV with all tables stacked")
     args = p.parse_args()
 
-    tables, settings, keys = {}, [], set()
-    for run in args.runs:
+    tables, settings, keys, splits = {}, [], set(), set()
+    names = [Path(r).name for r in args.runs]
+    for run, name in zip(args.runs, names):
         run = Path(run)
+        if names.count(name) > 1:          # same folder name in different places: use the full path
+            name = str(run)
         f = run / "cv_metrics_by_condition.csv"
         if not f.exists():
             sys.exit(f"{f} not found (is this a finished SPARSH-next run?)")
-        tables[run.name] = pd.read_csv(f).set_index("condition")
+        tables[name] = pd.read_csv(f).set_index("condition")
         cfg = json.loads((run / "config.json").read_text())
-        t, m = cfg["training"], cfg["model"]
-        settings.append({"run": run.name, "imbalance": t["imbalance"], "encoding": m["input_encoding"],
+        t, m, d = cfg["training"], cfg["model"], cfg["data"]
+        settings.append({"run": name, "imbalance": t["imbalance"], "encoding": m["input_encoding"],
                          "train_sim": t["train_sim"], "coverage": t["coverage_mode"], "calibrated": t["calibrate"],
-                         "n_samples": cfg["data"]["n_samples"], "n_classes": m["n_classes"],
+                         "n_samples": d["n_samples"], "n_classes": m["n_classes"],
                          "median_best_epoch": pd.Series([r["best_epoch"] for r in cfg["cv_folds"]]).median()})
-        keys.add((cfg["data"]["data_path"], cfg["data"]["n_samples"], t["seed"], t["n_folds"], t["eval_seed"],
-                  cfg["data"].get("groups_file"), cfg["data"].get("group_col")))
+        keys.add((d["data_path"], d["n_samples"], d["n_cpgs"], d.get("cpg_list"),
+                  json.dumps(d.get("class_counts"), sort_keys=True), d.get("groups_file"), d.get("group_col"),
+                  t["eval_seed"], tuple(t["eval_coverages"])))
+        splits.add((t["seed"], t["n_folds"]))
 
     print(pd.DataFrame(settings).to_string(index=False))
     if len(keys) > 1:
-        print("\nWARNING: runs differ in data, seed, folds, grouping or eval_seed; they were not scored on the "
-              "same inputs and are not directly comparable.")
+        print("\nWARNING: runs differ in data, CpG set, classes, grouping, eval_seed or evaluation coverages; "
+              "they are not directly comparable.")
+    elif len(splits) > 1:
+        print("\nNote: runs use different fold splits (seed, fold count or grouping). Samples and evaluation "
+              "inputs are identical, so differences include run-to-run noise; this is how to measure that noise.")
 
     stacked = []
     for metric in args.metrics:
@@ -57,6 +66,9 @@ def main():
         if not cols:
             print(f"\n(metric {metric} not found)")
             continue
+        lacking = [name for name in tables if name not in cols]
+        if lacking:
+            print(f"\n(metric {metric} is missing for: {lacking}; a different --threshold?)")
         table = pd.DataFrame(cols)
         ont = [c for c in table.index if c.startswith("reads_")]
         if ont:

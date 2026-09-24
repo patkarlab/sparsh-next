@@ -103,8 +103,19 @@ def main():
 
     files = sorted(Path(args.ont_dir).glob("*.csv")) if args.ont_dir else []
     files += [Path(s) for s in args.samples]
+    unique, seen = [], set()
+    for f in files:                      # the same file given twice is read once
+        key = f.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    files = unique
     if not files:
         sys.exit("No input CSV files (use --ont_dir and/or --samples)")
+    stems = pd.Series([f.stem.strip().upper() for f in files])
+    if stems.duplicated().any():
+        sys.exit(f"Different files map to the same sample name (case is ignored): "
+                 f"{sorted(set(stems[stems.duplicated()]))}")
 
     # ------------------------------------------------------------ load samples
     rows, X_ok, errors = [], [], []
@@ -112,7 +123,7 @@ def main():
         sample = f.stem.strip().upper()
         try:
             x, info = read_ont_csv(f, cpg_ids)
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             errors.append({"sample": sample, "file": str(f), "error": str(e)})
             print(f"  ERROR {f.name}: {e}")
             continue
@@ -134,9 +145,11 @@ def main():
     order = np.argsort(-probs, axis=1)
     meta["prediction"] = [classes[i] for i in order[:, 0]]
     meta["confidence"] = probs[np.arange(len(probs)), order[:, 0]]
-    for r in (1, 2):
+    for r in range(1, min(3, len(classes))):
         meta[f"top{r + 1}_class"] = [classes[i] for i in order[:, r]]
         meta[f"top{r + 1}_prob"] = probs[np.arange(len(probs)), order[:, r]]
+    if "top2_class" not in meta:
+        meta["top2_class"] = ""
     enough = meta["coverage_pct"] >= 100.0 * args.min_coverage
     meta["callable"] = enough & (meta["confidence"] >= threshold)
     meta["note"] = np.where(enough, "", f"coverage below {100 * args.min_coverage:.1f}%")
@@ -153,6 +166,11 @@ def main():
     gt = pd.read_csv(args.ground_truth, dtype=str)
     if not {"sample", "true_label"} <= set(gt.columns):
         sys.exit("Ground truth needs columns: sample,true_label")
+    blank = gt["sample"].isna() | gt["true_label"].isna() | (gt["true_label"].fillna("").str.strip() == "")
+    if blank.any():
+        print(f"Ground truth: {int(blank.sum())} rows without a sample or label are ignored: "
+              f"{gt.loc[blank, 'sample'].fillna('?').tolist()[:10]}")
+        gt = gt[~blank].copy()
     gt["sample"] = gt["sample"].str.strip().str.upper()
     gt["true_label_raw"] = gt["true_label"].str.strip()
     gt["true_label"] = gt["true_label_raw"] if args.no_label_map else apply_label_map(gt["true_label_raw"], label_map, log=False)

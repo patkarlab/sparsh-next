@@ -8,7 +8,7 @@
 
 set -eo pipefail
 cd "${PBS_O_WORKDIR:-$(pwd)}"
-source jobs/settings.sh
+source "${SETTINGS_FILE:-jobs/settings.sh}"
 source jobs/common.sh
 
 python scripts/check_data.py \

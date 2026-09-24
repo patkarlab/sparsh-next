@@ -131,7 +131,10 @@ def load_training_data(
     if cpg_list_path:
         with open(cpg_list_path) as f:
             reference = [str(c) for c in json.load(f)]
-        missing = [c for c in reference if c not in set(cpg_cols)]
+        if len(set(reference)) != len(reference):
+            raise ValueError(f"{cpg_list_path} lists some CpGs more than once")
+        present = set(cpg_cols)
+        missing = [c for c in reference if c not in present]
         if missing:
             raise ValueError(f"{len(missing)} CpGs from {cpg_list_path} are not in the data, e.g. {missing[:5]}")
         cpg_cols = reference
@@ -158,13 +161,20 @@ def load_training_data(
     if group_col:
         if group_col not in df.columns:
             raise ValueError(f"Group column {group_col!r} not found")
-        g = df[group_col]
-        groups = np.where(g.isna(), "sample:" + pd.Series(sample_ids), "group:" + g.astype(str)).astype(object)
-        logger.info(f"  Groups from column {group_col!r}: {len(set(groups))} groups for {len(groups)} samples")
+        g = df[group_col].to_numpy(dtype=object)
+        blank = pd.isna(g) | (pd.Series(g).astype(str).str.strip() == "").to_numpy()
+        groups = np.array([("sample:" + s) if b else ("group:" + str(v).strip())
+                           for s, v, b in zip(sample_ids, g, blank)], dtype=object)
+        logger.info(f"  Groups from column {group_col!r}: {len(set(groups))} groups for {len(groups)} samples "
+                    f"({int(blank.sum())} blank = own group)")
     if groups_file:
         gdf = pd.read_csv(groups_file, dtype=str)
         if not {"Sample_ID", "group"} <= set(gdf.columns):
             raise ValueError(f"{groups_file} must have columns Sample_ID and group")
+        gdf = gdf.dropna(subset=["Sample_ID", "group"])
+        gdf = gdf[(gdf["Sample_ID"].str.strip() != "") & (gdf["group"].str.strip() != "")]
+        if gdf["Sample_ID"].str.strip().duplicated().any():
+            raise ValueError(f"{groups_file}: a Sample_ID appears more than once")
         gmap = dict(zip(gdf["Sample_ID"].str.strip(), gdf["group"].str.strip()))
         groups = np.array([("group:" + gmap[s]) if s in gmap else ("sample:" + s) for s in sample_ids], dtype=object)
         logger.info(f"  Groups from {groups_file}: {len(set(groups))} groups for {len(groups)} samples")

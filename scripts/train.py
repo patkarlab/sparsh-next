@@ -18,6 +18,7 @@ output directory is never overwritten unless --overwrite is given.
 import argparse
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -33,7 +34,8 @@ from evaluation.metrics import confusion_frame, predictions_frame, recall_by_cla
 from models.corruption import COVERAGE_MODES, SIMULATIONS  # noqa: E402
 from models.sparse_nn import ENCODINGS, softmax_np  # noqa: E402
 from training.reproducibility import generate_run_id, get_environment_metadata, set_deterministic_mode  # noqa: E402
-from training.trainer import IMBALANCE_MODES, TrainConfig, cross_validate, train_final_model  # noqa: E402
+from training.trainer import (IMBALANCE_MODES, TrainConfig, cross_validate,  # noqa: E402
+                              evaluation_conditions, train_final_model)
 from training.training_curves import save_history  # noqa: E402
 
 VERSION = (REPO / "VERSION").read_text().strip()
@@ -96,7 +98,8 @@ def parse_args():
 
     o = p.add_argument_group("outputs and hardware")
     o.add_argument("--no_fold_models", action="store_true", help="Do not save fold weights (saves disk)")
-    o.add_argument("--final_model", action="store_true", help="Also train one model on all samples")
+    o.add_argument("--final_model", action="store_true",
+                   help="Also train one model on all samples except an inner split used for early stopping")
     o.add_argument("--device", default="cuda")
     o.add_argument("--data_on_gpu", choices=["auto", "always", "never"], default="auto")
     o.add_argument("--seed", type=int, default=42)
@@ -124,9 +127,15 @@ def main():
     logger.info(f"SPARSH-next {VERSION} | run {run_id}")
     logger.info(f"Arguments: {vars(args)}")
     set_deterministic_mode(args.seed)
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        sys.exit("CUDA was requested but no GPU is visible. Submit to a GPU node, or pass --device cpu "
+                 "deliberately (full-size training on CPU would exceed the walltime).")
     for cov in list(args.val_coverages) + list(args.eval_coverages) + [args.cov_min, args.cov_max]:
         if not 0.0 < cov < 1.0:
             sys.exit(f"Coverages must be observed fractions between 0 and 1 (got {cov})")
+    condition_names = [c[0] for c in evaluation_conditions(args.eval_coverages)]
+    if args.primary_condition not in condition_names:
+        sys.exit(f"--primary_condition {args.primary_condition} is not one of {condition_names}")
 
     # ---------------------------------------------------------------- data
     label_map_path = None if str(args.label_map).lower() == "none" else args.label_map
@@ -168,11 +177,22 @@ def main():
         mask_start=args.mask_start, mask_end=args.mask_end, n_folds=args.n_folds,
         inner_val_frac=args.inner_val_frac, val_sim=args.val_sim or args.train_sim,
         val_coverages=tuple(args.val_coverages), eval_coverages=tuple(args.eval_coverages),
-        eval_seed=args.eval_seed, calibrate=not args.no_calibration, seed=args.seed,
-        device=args.device, data_on_gpu=args.data_on_gpu,
+        eval_seed=args.eval_seed, calibrate=not args.no_calibration,
+        clip_observed=(0.05, 0.95) if args.train_sim == "mask" else None,
+        seed=args.seed, device=args.device, data_on_gpu=args.data_on_gpu,
     )
     logger.info(f"Model: {model_config}")
     logger.info(f"Training: {cfg.to_dict()}")
+
+    n_params = sum(a * b + b for a, b in zip([X.shape[1]] + list(args.hidden_dims),
+                                             list(args.hidden_dims) + [n_classes]))
+    n_saved = (0 if args.no_fold_models else args.n_folds) + (1 if args.final_model else 0)
+    need_gb = n_saved * n_params * 4 * 1.05 / 1e9
+    free_gb = shutil.disk_usage(out).free / 1e9
+    logger.info(f"Model weights to save: {n_saved} x {n_params * 4 / 1e9:.2f} GB; free space {free_gb:.0f} GB")
+    if need_gb > free_gb:
+        sys.exit(f"Not enough disk space in {out} for the model weights ({need_gb:.1f} GB needed, "
+                 f"{free_gb:.1f} GB free). Point RUNS_DIR at a larger disk or use --no_fold_models.")
 
     # ---------------------------------------------------------------- nested CV
     history = []
@@ -232,7 +252,7 @@ def main():
         },
         "inference": {
             "threshold": args.threshold,
-            "clip_observed": [0.05, 0.95] if args.train_sim == "mask" else None,
+            "clip_observed": list(cfg.clip_observed) if cfg.clip_observed else None,
             "fold_models": None if args.no_fold_models else [
                 {"file": f"fold_models/fold{r['fold']}.pt", "temperature": r["temperature"]} for r in cv["records"]],
             "final_model": None if final_info is None else {"file": "model.pt", **final_info},

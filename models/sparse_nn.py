@@ -19,6 +19,10 @@ scaled   : centre observed values at 0.5 (x - 0.5), set missing CpGs to 0 and
            so the expected first-layer input is the same at every coverage.
            Offered as an experiment: similar accuracy in synthetic tests,
            slightly worse calibration at 20-30% coverage.
+
+Known limitation (both encodings): an observed value of exactly 0.5, such as one
+of two reads methylated, is encoded like a missing CpG. Under the read model this
+concerns about 1-3% of observed CpGs at 10-30% coverage.
 """
 
 from typing import Any, Dict, List, Sequence

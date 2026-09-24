@@ -8,12 +8,14 @@
 #
 # Submit from the sparsh-next folder:
 #   qsub -v RECIPE=default jobs/train.pbs
-# RECIPE is one of: default, legacy, scaled, mask_sim, schedule (docs/EXPERIMENTS.md).
-# Optional: RUN_NAME=... (folder name; defaults to the recipe name).
+# RECIPE is one of: default, legacy, scaled, mask_sim, schedule (the five comparison runs),
+# scaled_schedule, or final (default recipe plus one extra model on all samples). See docs/EXPERIMENTS.md.
+# Optional: RUN_NAME=... (folder name; defaults to the recipe name) and SEED=... (default 42),
+# e.g. qsub -v RECIPE=default,SEED=43,RUN_NAME=default_seed43 jobs/train.pbs
 
 set -eo pipefail
 cd "${PBS_O_WORKDIR:-$(pwd)}"
-source jobs/settings.sh
+source "${SETTINGS_FILE:-jobs/settings.sh}"
 source jobs/common.sh
 
 RECIPE="${RECIPE:-default}"
@@ -23,6 +25,8 @@ case "$RECIPE" in
   scaled)   RECIPE_ARGS="--input_encoding scaled" ;;
   mask_sim) RECIPE_ARGS="--train_sim mask --val_sim reads" ;;
   schedule) RECIPE_ARGS="--coverage_mode schedule" ;;
+  scaled_schedule) RECIPE_ARGS="--input_encoding scaled --coverage_mode schedule" ;;
+  final)    RECIPE_ARGS="--final_model" ;;
   *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
 esac
 RUN_NAME="${RUN_NAME:-$RECIPE}"
@@ -33,6 +37,7 @@ python scripts/train.py \
   ${EXCLUDE_IDS:+--exclude_ids "$EXCLUDE_IDS"} \
   ${GROUPS_FILE:+--groups_file "$GROUPS_FILE"} \
   --exclude_prefixes $EXCLUDE_PREFIXES \
+  --seed "${SEED:-42}" \
   $RECIPE_ARGS
 
 echo "Finished $(date)"

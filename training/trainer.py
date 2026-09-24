@@ -76,6 +76,9 @@ class TrainConfig:
     eval_coverages: Tuple[float, ...] = (0.03, 0.05, 0.1, 0.2, 0.3)
     eval_seed: int = 12345
     calibrate: bool = True
+    # clip applied to read-level (ONT-like) inputs in CV exactly as predict.py applies it to ONT files;
+    # set to (0.05, 0.95) for mask-trained recipes, None otherwise (scripts/train.py decides)
+    clip_observed: Optional[Tuple[float, float]] = None
     # hardware and reproducibility
     seed: int = 42
     device: str = "cuda"
@@ -181,8 +184,13 @@ def split_indices(y: np.ndarray, groups: Optional[np.ndarray], n_splits: int, se
     if groups is None:
         splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
         return list(splitter.split(dummy, y))
-    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    return list(splitter.split(dummy, y, groups))
+    # StratifiedGroupKFold(shuffle=True) did not shuffle correctly before scikit-learn 1.8 and lost
+    # stratification. Randomise the group order ourselves (seeded) and use the deterministic algorithm,
+    # which gives stratified, reproducible folds on every scikit-learn version.
+    _, inverse = np.unique(np.asarray(groups, dtype=str), return_inverse=True)
+    relabelled = np.random.RandomState(seed).permutation(inverse.max() + 1)[inverse]
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=False)
+    return list(splitter.split(dummy, y, relabelled))
 
 
 def inner_split(y: np.ndarray, groups: Optional[np.ndarray], frac: float, seed: int):
@@ -216,8 +224,18 @@ def _storage_device(n_bytes: int, device: str, mode: str) -> str:
     return device if n_bytes < 0.5 * free else "cpu"
 
 
+T_MIN, T_MAX = 0.25, 4.0
+
+
 def fit_temperature(logits: np.ndarray, y: np.ndarray) -> float:
-    """Single temperature T minimising the NLL of softmax(logits / T); T is kept within [0.05, 20]."""
+    """
+    Single temperature T minimising the NLL of softmax(logits / T), kept within [0.25, 4].
+    When every inner-validation sample is already correct the NLL keeps falling as T -> 0,
+    so no temperature is fitted (T = 1).
+    """
+    if np.all(logits.argmax(axis=1) == y):
+        logger.warning("  inner validation is perfectly classified; temperature left at 1.0")
+        return 1.0
     lt = torch.tensor(logits, dtype=torch.float64)
     yt = torch.tensor(y, dtype=torch.long)
     log_t = torch.zeros(1, dtype=torch.float64, requires_grad=True)
@@ -230,7 +248,26 @@ def fit_temperature(logits: np.ndarray, y: np.ndarray) -> float:
         return loss
 
     opt.step(closure)
-    return float(log_t.detach().exp().clamp(0.05, 20.0).item())
+    t = float(log_t.detach().exp().item())
+    if not np.isfinite(t) or t <= T_MIN or t >= T_MAX:
+        logger.warning(f"  fitted temperature {t:.3f} is outside [{T_MIN}, {T_MAX}]; clipped")
+    return float(np.clip(t if np.isfinite(t) else 1.0, T_MIN, T_MAX))
+
+
+def clip_observed(X: np.ndarray, clip: Optional[Sequence[float]]) -> np.ndarray:
+    """Clip observed values (NaN stays NaN), as predict.py does for mask-trained models."""
+    if clip is None:
+        return X
+    return np.where(np.isnan(X), X, np.clip(X, clip[0], clip[1])).astype(np.float32)
+
+
+def make_inner_sets(X: np.ndarray, sample_ids: np.ndarray, cfg: "TrainConfig") -> List[np.ndarray]:
+    """Fixed corrupted copies of the inner validation samples, one per validation coverage."""
+    sets = []
+    for c in cfg.val_coverages:
+        Xc = corrupt_rows(X, sample_ids, c, cfg.val_sim, cfg.seed, salt=1)
+        sets.append(clip_observed(Xc, cfg.clip_observed) if cfg.val_sim == "reads" else Xc)
+    return sets
 
 
 def _nll_acc(logits: np.ndarray, y: np.ndarray) -> Tuple[float, float]:
@@ -361,6 +398,9 @@ def evaluation_conditions(eval_coverages: Sequence[float]) -> List[Tuple[str, Op
     for sim in ("reads", "mask"):
         for c in eval_coverages:
             conds.append((f"{sim}_{c:.2f}", sim, float(c)))
+    names = [c[0] for c in conds]
+    if len(set(names)) != len(names):
+        raise ValueError(f"--eval_coverages give duplicate condition names at 2 decimals: {names}")
     return conds
 
 
@@ -395,8 +435,7 @@ def cross_validate(
         if missing:
             logger.warning(f"  classes in the outer fold but absent from training: {missing}")
 
-        inner_sets = [corrupt_rows(X[ival_idx], sample_ids[ival_idx], c, cfg.val_sim, cfg.seed, salt=1)
-                      for c in cfg.val_coverages]
+        inner_sets = make_inner_sets(X[ival_idx], sample_ids[ival_idx], cfg)
         result = train_one_model(X[fit_idx], y[fit_idx], inner_sets, y[ival_idx], n_classes,
                                  model_config, cfg, seed=cfg.seed + k, tag=f"fold{k + 1}", history=history)
         del inner_sets
@@ -404,6 +443,8 @@ def cross_validate(
 
         for name, sim, frac in conditions:
             Xc = corrupt_rows(X[te], sample_ids[te], frac, sim, cfg.eval_seed, salt=2)
+            if sim == "reads":
+                Xc = clip_observed(Xc, cfg.clip_observed)
             logits[name][te] = predict_logits(model, Xc, device, cfg.eval_batch_size)
             del Xc
         fold_of[te] = k
@@ -436,10 +477,12 @@ def train_final_model(
     cfg: TrainConfig,
     history: Optional[List[Dict]] = None,
 ) -> Dict:
-    """Same recipe on all samples, with an inner split for early stopping and calibration."""
+    """
+    Same recipe on all samples except an inner split (about inner_val_frac, 1/7 by
+    default) held out for early stopping and temperature calibration.
+    """
     fit_rel, ival_rel = inner_split(y, groups, cfg.inner_val_frac, cfg.seed + 999)
-    inner_sets = [corrupt_rows(X[ival_rel], sample_ids[ival_rel], c, cfg.val_sim, cfg.seed, salt=1)
-                  for c in cfg.val_coverages]
+    inner_sets = make_inner_sets(X[ival_rel], sample_ids[ival_rel], cfg)
     logger.info(f"Final model: fit {len(fit_rel)}, inner val {len(ival_rel)}")
     return train_one_model(X[fit_rel], y[fit_rel], inner_sets, y[ival_rel], n_classes,
                            model_config, cfg, seed=cfg.seed + 999, tag="final", history=history)
