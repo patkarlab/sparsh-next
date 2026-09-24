@@ -1,15 +1,29 @@
-"""
-SPARSH Model module containing the adaptive recognition architecture.
-"""
+"""SPARSH-next model module."""
 
-from .sparse_nn import (
-    SparseNN,
-    apply_progressive_mask,
+from .corruption import (
+    COVERAGE_MODES,
+    SIMULATIONS,
+    corrupt_numpy,
+    corrupt_rows,
+    corrupt_torch,
     get_mask_ratio,
+    sample_observed_fraction,
+    sample_rng,
 )
+from .sparse_nn import ENCODINGS, SparseNN, load_model, predict_logits, softmax_np
 
 __all__ = [
+    "COVERAGE_MODES",
+    "SIMULATIONS",
+    "ENCODINGS",
     "SparseNN",
-    "apply_progressive_mask",
+    "corrupt_numpy",
+    "corrupt_rows",
+    "corrupt_torch",
     "get_mask_ratio",
+    "load_model",
+    "predict_logits",
+    "sample_observed_fraction",
+    "sample_rng",
+    "softmax_np",
 ]
