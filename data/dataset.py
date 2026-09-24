@@ -1,568 +1,290 @@
-# dataset.py file 
-
-
 """
-SPARSH Data Loading and Preprocessing.
+SPARSH-next: loading and preparing the array training data.
+
+Conventions used throughout this code base
+------------------------------------------
+- X is a float32 matrix (samples x CpGs) of beta values in [0, 1].
+- Missing values are NaN. They are NOT replaced by 0.5 here. How a missing
+  CpG is presented to the network is decided by the model's input encoding
+  (see models/sparse_nn.py), so masked CpGs, failed array probes and CpGs
+  without ONT reads are all handled the same way.
+- Class labels pass through configs/label_map.json (raw label -> model class)
+  before anything else. The same file is applied to ONT ground-truth files.
 """
 
-import numpy as np
-import pandas as pd
 import json
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Optional, Set
-from sklearn.feature_selection import mutual_info_classif, f_classif
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.utils import resample
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+LABEL_COLUMN = "ANNOTATION"
+SAMPLE_COLUMN = "Sample_ID"
+SOURCE_COLUMN = "Source_Dataset"
+
 
 # =============================================================================
-# Data Loading
+# Label map
 # =============================================================================
 
-def load_ids_to_exclude(junk_path: str) -> Set[str]:
-    """
-    Load sample IDs to exclude from training.
-    
-    Args:
-        junk_path: Path to text file with one sample ID per line.
-        
-    Returns:
-        Set of sample IDs to exclude.
-    """
-    junk_path = Path(junk_path)
-    if not junk_path.exists():
-        logger.warning(f"Exclusion file not found: {junk_path}")
+def load_label_map(path: Optional[str]) -> Dict[str, str]:
+    """Read configs/label_map.json. Returns an empty map when path is None."""
+    if path is None:
+        return {}
+    with open(path) as f:
+        content = json.load(f)
+    mapping = content.get("merge", content) if isinstance(content, dict) else None
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{path}: expected a JSON object with a 'merge' dictionary")
+    for raw, merged in mapping.items():
+        if not isinstance(raw, str) or not isinstance(merged, str):
+            raise ValueError(f"{path}: every label map entry must be text -> text")
+    return dict(mapping)
+
+
+def apply_label_map(labels: Sequence[str], label_map: Dict[str, str], log: bool = True) -> np.ndarray:
+    """Replace raw labels by model classes. Logs how many samples each rule changed."""
+    labels = np.asarray([str(v).strip() for v in labels], dtype=object)
+    if not label_map:
+        return labels
+    mapped = labels.copy()
+    for raw, merged in label_map.items():
+        hit = labels == raw
+        n = int(hit.sum())
+        mapped[hit] = merged
+        if log:
+            if n:
+                logger.info(f"  label map: {raw!r} -> {merged!r} ({n} samples)")
+            else:
+                logger.warning(f"  label map: no sample is labelled {raw!r} (check the spelling)")
+    return mapped
+
+
+# =============================================================================
+# Loading
+# =============================================================================
+
+def load_ids_to_exclude(path: Optional[str]) -> Set[str]:
+    """One sample ID per line. A missing file is an error, not a silent no-op."""
+    if path is None:
         return set()
-    
-    with open(junk_path, "r") as f:
-        ids = set(line.strip() for line in f if line.strip())
-    
-    logger.info(f"Loaded {len(ids)} sample IDs to exclude")
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Exclusion file not found: {p}")
+    with open(p) as f:
+        ids = {line.strip() for line in f if line.strip()}
+    logger.info(f"Loaded {len(ids)} sample IDs to exclude from {p}")
     return ids
 
-def normalize_and_filter_labels(
-    df: pd.DataFrame,
-    labels_raw: np.ndarray,
-    sample_ids: List[str],
-):
-    """
-    Apply class cleanup rules:
-    - Remove JMML_Inter
-    - Merge MDS_Hypo + MDS_Hyper → MDS
-    - Merge CMML_Hypo + CMML_Hyper → CMML
-    """
 
-    labels_raw = pd.Series(labels_raw)
-    # now I have added this class in the dataset, so I am not removing it
-    # ── Remove JMML_Inter ─────────────────────────────
-    #remove_mask = labels_raw == "JMML_Inter"    
-    #if remove_mask.any():
-    #    logger.info(f"Removing {remove_mask.sum()} JMML_Inter samples")
-    #    df = df.loc[~remove_mask].reset_index(drop=True)
-    #    labels_raw = labels_raw.loc[~remove_mask].reset_index(drop=True)
-    #    sample_ids = df["Sample_ID"].astype(str).tolist()
-
-    # ── Merge MDS classes ─────────────────────────────
-    labels_raw = labels_raw.replace({
-        # "MDS_Hypo": "MDS",
-        # "MDS_Hyper": "MDS",
-        # "CMML_Hypo": "CMML",
-        # "CMML_Hyper": "CMML",
-        # "JMML_Inter": "JMML", # this was wrong suggest by nikhil sir keep seprate classes of JMML
-        # "JMML_Hyper": "JMML",
-        # "JMML_Hypo": "JMML",
-        # "MDS_Hypo": "MDS",
-        # "MDS_Hyper": "MDS",
-        # "MDS-LB_SF3B1_mut": "MDS",
-        "MDS_SF3B1_mut": "MDS",
-        "AML_DEK-NUP214": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "AML_NUP98-r": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "AML_mutated NPM1": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "B-ALL_PAX5 alt": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-        "B-ALL_BCR-ABL1 like": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-        "B-ALL_BCR-ABL1": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-    })
-
-    # ── Merge CMML classes ────────────────────────────
-    labels_raw = labels_raw.replace({
-        # "CMML_Hypo": "CMML",
-        # "CMML_Hyper": "CMML",
-        # "MDS_Hypo": "MDS",
-        # "MDS_Hyper": "MDS",
-        # "MDS": "MDS_163", THIS WHEN HAVE TO EXCLUTE THIS CLASS OF MDS ONLY
-        # "MDS-LB_SF3B1_mut": "MDS",
-        "MDS_SF3B1_mut": "MDS",
-        "AML_DEK-NUP214": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "AML_NUP98-r": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "AML_mutated NPM1": "AML_mutated_NPM1_Nup98_DEKnup214",
-        "B-ALL_PAX5 alt": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-        "B-ALL_BCR-ABL1 like": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-        "B-ALL_BCR-ABL1": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
-        # "JMML_Inter": "JMML", # this was wrong suggest by nikhil sir keep seprate classes of JMML
-        # "JMML_Hyper": "JMML",
-        # "JMML_Hypo": "JMML",
-    })
-
-    return df, labels_raw.values, sample_ids
-
-
-
-def load_methylation_pickle(
+def load_training_data(
     data_path: str,
-    junk_path: Optional[str] = None,
+    label_map: Optional[Dict[str, str]] = None,
+    exclude_ids_path: Optional[str] = None,
     cpg_list_path: Optional[str] = None,
-) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], Dict[int, str]]:
+    group_col: Optional[str] = None,
+    groups_file: Optional[str] = None,
+) -> Dict[str, object]:
     """
-    Load methylation data from pickle file.
-    
-    Expected format (updated):
-    - Column 0          : Sample_ID  (GSM IDs)
-    - Columns 1 to -3   : CpG probes (cg...)
-    - Second-to-last    : ANNOTATION (class labels)
-    - Last              : Source_Dataset (batch info, ignored)
-    
-    Args:
-        data_path: Path to pickle file containing methylation DataFrame.
-        junk_path: Optional path to file with sample IDs to exclude.
-        cpg_list_path: Optional path to JSON with CpG ordering (for consistency).
-        
-    Returns:
-        Tuple containing:
-        - X: Methylation matrix (n_samples, n_features)
-        - y: Integer labels (n_samples,)
-        - sample_ids: List of sample identifiers
-        - cpg_ids: List of CpG probe IDs
-        - idx_to_class: Mapping from label index to class name
+    Load the training pickle.
+
+    Expected: a pandas DataFrame with one row per sample, CpG columns named
+    cg..., an ANNOTATION column, optionally Sample_ID (otherwise the index is
+    used) and Source_Dataset.
+
+    Returns a dict with keys: X, labels_raw, labels, sample_ids, cpg_ids,
+    sources (array or None), groups (array or None).
     """
-    data_path = Path(data_path)
-    
-    logger.info(f"Loading methylation data from {data_path}")
+    logger.info(f"Loading training data from {data_path}")
     df = pd.read_pickle(data_path)
-    logger.info(f"Loaded DataFrame: {df.shape[0]} samples, {df.shape[1]} columns")
+    logger.info(f"  DataFrame: {df.shape[0]} rows, {df.shape[1]} columns")
 
-    if "Sample_ID" in df.columns:
-        sample_ids = df["Sample_ID"].astype(str).tolist()
+    if SAMPLE_COLUMN in df.columns:
+        sample_ids = df[SAMPLE_COLUMN].astype(str).str.strip().to_numpy(dtype=object)
     else:
-        logger.info("Sample_ID column not found — using index as Sample_ID")
-        df = df.reset_index().rename(columns={"index": "Sample_ID"})
-        sample_ids = df["Sample_ID"].astype(str).tolist()
+        logger.info(f"  No {SAMPLE_COLUMN} column: using the DataFrame index as sample IDs")
+        sample_ids = df.index.astype(str).str.strip().to_numpy(dtype=object)
+    if len(set(sample_ids)) != len(sample_ids):
+        dup = pd.Series(sample_ids)[pd.Series(sample_ids).duplicated()].unique()[:5]
+        raise ValueError(f"Duplicate sample IDs in the training data, e.g. {list(dup)}")
 
+    if LABEL_COLUMN not in df.columns:
+        raise ValueError(f"Column {LABEL_COLUMN} not found in {data_path}")
+    raw = df[LABEL_COLUMN]
+    if raw.isna().any():
+        raise ValueError(f"{int(raw.isna().sum())} samples have no {LABEL_COLUMN}; fix or exclude them first")
+    labels_raw = raw.astype(str).str.strip().to_numpy(dtype=object)
 
+    sources = df[SOURCE_COLUMN].astype(str).to_numpy(dtype=object) if SOURCE_COLUMN in df.columns else None
 
-    logger.info(f"Sample IDs from 'Sample_ID' column, first 5: {sample_ids[:5]}")
+    meta = {SAMPLE_COLUMN, LABEL_COLUMN, SOURCE_COLUMN}
+    if group_col:
+        meta.add(group_col)
+    cpg_cols = [c for c in df.columns if c not in meta and str(c).startswith("cg")]
+    if len(set(cpg_cols)) != len(cpg_cols):
+        raise ValueError("Duplicate CpG column names in the training data")
 
-
-    labels_raw = df["ANNOTATION"].values
-    df, labels_raw, sample_ids = normalize_and_filter_labels(df, labels_raw, sample_ids)
-    logger.info(f"Label column : ANNOTATION")
-    logger.info(f"Batch column : Source_Dataset (ignored in training)")
-
-
-    meta_cols = ["Sample_ID", "ANNOTATION", "Source_Dataset"]
-    cpg_cols  = [c for c in df.columns if c not in meta_cols and str(c).startswith("cg")]
-    logger.info(f"Found {len(cpg_cols)} CpG columns")
-    
-
-    X = df[cpg_cols].values.astype(np.float32)
-    cpg_ids = cpg_cols
-    
-
-    nan_count = np.isnan(X).sum()
-    if nan_count > 0:
-        logger.info(f"Replacing {nan_count} NaN values with 0.5")
-        X = np.nan_to_num(X, nan=0.5)
-    
-
-    if junk_path:
-        junk_ids = load_ids_to_exclude(junk_path)
-        keep_mask = [sid not in junk_ids for sid in sample_ids]
-        n_excluded = sum(1 for k in keep_mask if not k)
-        
-        X          = X[keep_mask]
-        labels_raw = labels_raw[np.array(keep_mask)]
-        sample_ids = [sid for sid, keep in zip(sample_ids, keep_mask) if keep]
-        
-        logger.info(f"Excluded {n_excluded} junk samples, {len(sample_ids)} remaining")
-    
-
-    unique_classes = sorted(set(labels_raw))
-    class_to_idx   = {c: i for i, c in enumerate(unique_classes)}
-    idx_to_class   = {i: c for c, i in class_to_idx.items()}
-    
-    y = np.array([class_to_idx[c] for c in labels_raw])
-    
-
-    logger.info(f"Classes ({len(idx_to_class)}):")
-    unique, counts = np.unique(y, return_counts=True)
-    for idx, count in zip(unique, counts):
-        logger.info(f"  {idx_to_class[idx]}: {count}")
-    
-
-    if cpg_list_path and Path(cpg_list_path).exists():
+    if cpg_list_path:
         with open(cpg_list_path) as f:
-            reference_cpgs = json.load(f)
-        
-        cpg_set    = set(cpg_ids)
-        common_cpgs = [c for c in reference_cpgs if c in cpg_set]
-        
-        if len(common_cpgs) < len(cpg_ids):
-            logger.info(f"Using {len(common_cpgs)} CpGs from reference list")
-            
-            cpg_to_idx = {c: i for i, c in enumerate(cpg_ids)}
-            indices    = [cpg_to_idx[c] for c in common_cpgs]
-            X          = X[:, indices]
-            cpg_ids    = common_cpgs
-    
-    logger.info(f"Final: {X.shape[0]} samples, {X.shape[1]} CpGs, {len(idx_to_class)} classes")
-    
-    return X, y, sample_ids, cpg_ids, idx_to_class
+            reference = [str(c) for c in json.load(f)]
+        missing = [c for c in reference if c not in set(cpg_cols)]
+        if missing:
+            raise ValueError(f"{len(missing)} CpGs from {cpg_list_path} are not in the data, e.g. {missing[:5]}")
+        cpg_cols = reference
+        logger.info(f"  Using the {len(cpg_cols)} CpGs listed in {cpg_list_path}, in that order")
+
+    X = df[cpg_cols].to_numpy(dtype=np.float32, copy=True)  # writable copy (pandas copy-on-write safe)
+    with np.errstate(invalid="ignore"):
+        lo, hi = np.nanmin(X), np.nanmax(X)
+    if np.isinf(lo) or np.isinf(hi):
+        X[np.isinf(X)] = np.nan
+        lo, hi = np.nanmin(X), np.nanmax(X)
+    if lo < -1e-6 or hi > 1 + 1e-6:
+        raise ValueError(
+            f"Values outside [0, 1] (min {lo:.3f}, max {hi:.3f}); "
+            "expected beta values, not M-values or percentages"
+        )
+    n_nan = int(np.isnan(X).sum())
+    logger.info(f"  {X.shape[0]} samples x {X.shape[1]} CpGs; missing values: {n_nan} "
+                f"({100.0 * n_nan / X.size:.3f}%), kept as missing (not filled with 0.5)")
+
+    groups = None
+    if group_col and groups_file:
+        raise ValueError("Use either --group_col or --groups_file, not both")
+    if group_col:
+        if group_col not in df.columns:
+            raise ValueError(f"Group column {group_col!r} not found")
+        g = df[group_col]
+        groups = np.where(g.isna(), "sample:" + pd.Series(sample_ids), "group:" + g.astype(str)).astype(object)
+        logger.info(f"  Groups from column {group_col!r}: {len(set(groups))} groups for {len(groups)} samples")
+    if groups_file:
+        gdf = pd.read_csv(groups_file, dtype=str)
+        if not {"Sample_ID", "group"} <= set(gdf.columns):
+            raise ValueError(f"{groups_file} must have columns Sample_ID and group")
+        gmap = dict(zip(gdf["Sample_ID"].str.strip(), gdf["group"].str.strip()))
+        groups = np.array([("group:" + gmap[s]) if s in gmap else ("sample:" + s) for s in sample_ids], dtype=object)
+        logger.info(f"  Groups from {groups_file}: {len(set(groups))} groups for {len(groups)} samples")
+
+    del df
+    bundle = {
+        "X": X,
+        "labels_raw": labels_raw,
+        "labels": apply_label_map(labels_raw, label_map or {}),
+        "sample_ids": sample_ids,
+        "cpg_ids": list(map(str, cpg_cols)),
+        "sources": sources,
+        "groups": groups,
+    }
+
+    exclude_ids = load_ids_to_exclude(exclude_ids_path)
+    if exclude_ids:
+        keep = np.array([s not in exclude_ids for s in sample_ids])
+        unknown = exclude_ids - set(sample_ids)
+        if unknown:
+            logger.warning(f"  {len(unknown)} IDs in the exclusion file are not in the data")
+        logger.info(f"  Excluding {int((~keep).sum())} listed samples")
+        bundle = subset(bundle, keep)
+    return bundle
 
 
+def subset(bundle: Dict[str, object], keep: np.ndarray) -> Dict[str, object]:
+    """Keep the rows where keep is True in every per-sample array of the bundle."""
+    out = dict(bundle)
+    for key in ("X", "labels_raw", "labels", "sample_ids", "sources", "groups"):
+        if out.get(key) is not None:
+            out[key] = out[key][keep]
+    return out
 
+
+# =============================================================================
+# Class filtering and label encoding
+# =============================================================================
 
 def filter_classes(
-    X: np.ndarray,
-    y: np.ndarray,
-    sample_ids: List[str],
-    idx_to_class: Dict[int, str],
-    min_samples: int = 10,
+    labels: np.ndarray,
+    min_samples: int = 5,
     exclude_classes: Optional[List[str]] = None,
-) -> Tuple[np.ndarray, np.ndarray, List[str], Dict[int, str]]:
-
-    if exclude_classes is None:
-        exclude_classes = []
-    
-  
-    exclude_lower = [c.lower().strip() for c in exclude_classes]
-    
-    unique, counts = np.unique(y, return_counts=True)
-    
-    keep_classes = []
-    for idx, count in zip(unique, counts):
-        name = idx_to_class.get(idx, "")
-        name_lower = name.lower().strip()
-        
-        # Check exclusion criteria
-        should_exclude = any(excl in name_lower for excl in exclude_lower)
-        
-        if count >= min_samples and not should_exclude:
-            keep_classes.append(idx)
-        else:
-            reason = "excluded by name" if should_exclude else f"<{min_samples} samples"
-            logger.info(f"  Dropping: {name} ({count} samples) - {reason}")
-    
-    # Create mask and remap labels to contiguous indices
-    keep_mask = np.isin(y, keep_classes)
-    old_to_new = {old: new for new, old in enumerate(sorted(keep_classes))}
-    new_idx_to_class = {new: idx_to_class[old] for old, new in old_to_new.items()}
-    
-    X_filtered = X[keep_mask]
-    y_filtered = np.array([old_to_new[yi] for yi in y[keep_mask]])
-    sample_ids_filtered = [sid for sid, keep in zip(sample_ids, keep_mask) if keep]
-    
-    logger.info(f"Filtered: {len(idx_to_class)} -> {len(new_idx_to_class)} classes")
-    logger.info(f"Samples: {len(y)} -> {len(y_filtered)}")
-    
-    return X_filtered, y_filtered, sample_ids_filtered, new_idx_to_class
-
-
-
-
-def upsample_rare_classes(
-    X: np.ndarray,
-    y: np.ndarray,
-    upsample_to: int = 50,
-    random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray]:
-
-    unique, counts = np.unique(y, return_counts=True)
-    
-    X_list = [X]
-    y_list = [y]
-    
-    for cls, count in zip(unique, counts):
-        if count < upsample_to:
-            # Get samples of this class
-            cls_mask = y == cls
-            X_cls = X[cls_mask]
-            y_cls = y[cls_mask]
-            
-            # Bootstrap resample
-            n_new = upsample_to - count
-            X_new, y_new = resample(
-                X_cls, y_cls,
-                n_samples=n_new,
-                replace=True,
-                random_state=random_state,
-            )
-            
-            X_list.append(X_new)
-            y_list.append(y_new)
-            
-            logger.info(f"  Upsampled class {cls}: {count} -> {upsample_to}")
-    
-    X_upsampled = np.vstack(X_list)
-    y_upsampled = np.concatenate(y_list)
-    
-    logger.info(f"After upsampling: {len(y)} -> {len(y_upsampled)} samples")
-
-    return X_upsampled, y_upsampled
-
-
-def upsample_with_masking_augmentation(
-    X: np.ndarray,
-    y: np.ndarray,
-    target_count: int = 0,
-    mask_ratios: Optional[List[float]] = None,
-    fill_value: float = 0.5,
-    random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray]:
-    
-    rng = np.random.RandomState(random_state)
-
-    if mask_ratios is None:
-        mask_ratios = [0.3, 0.5, 0.7, 0.85, 0.9]
-
-    unique, counts = np.unique(y, return_counts=True)
-
-    if target_count <= 0:
-        target_count = counts.max()
-
-    X_list = [X.copy()]
-    y_list = [y.copy()]
-
-    n_features = X.shape[1]
-
-    for cls, count in zip(unique, counts):
-        if count >= target_count:
-            continue
-
-        cls_mask = y == cls
-        X_cls = X[cls_mask]
-        n_new = target_count - count
-
-        X_new = np.empty((n_new, n_features), dtype=np.float32)
-
-        for i in range(n_new):
-            # Randomly pick a source sample
-            src_idx = rng.randint(0, count)
-            sample = X_cls[src_idx].copy()
-
-            # Randomly pick a mask ratio
-            ratio = mask_ratios[rng.randint(0, len(mask_ratios))]
-
-            # Create mask and apply
-            mask = rng.random(n_features) < ratio
-            sample[mask] = fill_value
-
-            X_new[i] = sample
-
-        y_new = np.full(n_new, cls, dtype=y.dtype)
-
-        X_list.append(X_new)
-        y_list.append(y_new)
-
-        logger.info(
-            f"  Augmented class {cls}: {count} -> {target_count} "
-            f"(+{n_new} masked variants)"
-        )
-
-    X_augmented = np.vstack(X_list)
-    y_augmented = np.concatenate(y_list)
-
-    logger.info(
-        f"After masking augmentation: {len(y)} -> {len(y_augmented)} samples"
-    )
-
-    return X_augmented, y_augmented
-
-
-
-def create_holdout_split(
-    X: np.ndarray,
-    y: np.ndarray,
-    sample_ids: List[str],
-    test_size: float = 0.3,
-    random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[str], np.ndarray, np.ndarray]:
-
-    sample_ids_arr = np.array(sample_ids)
-    indices = np.arange(len(y))
-
-    train_idx, holdout_idx = train_test_split(
-        indices,
-        test_size=test_size,
-        stratify=y,
-        random_state=random_state,
-    )
-
-    X_train = X[train_idx]
-    y_train = y[train_idx]
-    X_holdout = X[holdout_idx]
-    y_holdout = y[holdout_idx]
-    train_ids = sample_ids_arr[train_idx].tolist()
-    holdout_ids = sample_ids_arr[holdout_idx].tolist()
-
-    logger.info(f"Train/Holdout split: {len(train_idx)} train, {len(holdout_idx)} holdout")
-    logger.info(f"  Train class distribution:")
-    for cls in np.unique(y_train):
-        logger.info(f"    Class {cls}: {(y_train == cls).sum()}")
-    logger.info(f"  Holdout class distribution:")
-    for cls in np.unique(y_holdout):
-        logger.info(f"    Class {cls}: {(y_holdout == cls).sum()}")
-
-    return X_train, y_train, X_holdout, y_holdout, train_ids, holdout_ids, train_idx, holdout_idx
-
-
-# =============================================================================
-# Feature Selection
-# =============================================================================
-
-def calculate_feature_importance(
-    X: np.ndarray,
-    y: np.ndarray,
-    n_subsample: int = 1000,
-    random_state: int = 42,
+    exclude_prefixes: Optional[List[str]] = None,
 ) -> np.ndarray:
+    """
+    Return a boolean mask of samples to keep.
 
-    np.random.seed(random_state)
-    n_features = X.shape[1]
-    scores = np.zeros(n_features)
-    
-    logger.info("Calculating feature importance...")
-    
-    # Subsample for computational efficiency
-    if len(X) > n_subsample:
-        idx = np.random.choice(len(X), n_subsample, replace=False)
-        X_sub = X[idx]
-        y_sub = y[idx]
-    else:
-        X_sub = X
-        y_sub = y
-    
-    # Method 1: Variance
-    logger.info("  - Variance")
-    var_scores = np.var(X, axis=0)
-    var_scores = _normalize(var_scores)
-    scores += var_scores
-    
-    # Method 2: Mutual Information
-    logger.info("  - Mutual Information")
-    mi_scores = mutual_info_classif(X_sub, y_sub, random_state=random_state, n_jobs=-1)
-    mi_scores = _normalize(mi_scores)
-    scores += mi_scores * 2
-    
-    # Method 3: F-score (ANOVA)
-    logger.info("  - F-score (ANOVA)")
-    f_scores, _ = f_classif(X, y)
-    f_scores = np.nan_to_num(f_scores, nan=0)
-    f_scores = _normalize(f_scores)
-    scores += f_scores
-    
-    # Method 4: Random Forest
-    logger.info("  - Random Forest")
-    rf = RandomForestClassifier(
-        n_estimators=100, 
-        max_depth=10, 
-        random_state=random_state, 
-        n_jobs=-1
-    )
-    rf.fit(X_sub, y_sub)
-    rf_scores = rf.feature_importances_
-    rf_scores = _normalize(rf_scores)
-    scores += rf_scores * 2
-    
-    logger.info("Feature importance calculation complete")
-    
-    return scores
+    exclude_classes: exact class names (after the label map). An unknown name
+    is an error, so a typo cannot silently keep a class.
+    exclude_prefixes: remove every class whose name starts with the prefix
+    (for example "MPAL"). Each removed class is logged.
+    """
+    exclude_classes = list(exclude_classes or [])
+    exclude_prefixes = list(exclude_prefixes or [])
+    names, counts = np.unique(labels, return_counts=True)
+    present = set(names)
+    unknown = [c for c in exclude_classes if c not in present]
+    if unknown:
+        raise ValueError(f"--exclude_classes names not found after the label map: {unknown}. "
+                         f"Available classes: {sorted(present)}")
+
+    drop = set(exclude_classes)
+    for prefix in exclude_prefixes:
+        matched = [c for c in names if c.startswith(prefix)]
+        if not matched:
+            logger.warning(f"  --exclude_prefixes {prefix!r} matched no class")
+        drop.update(matched)
+
+    keep_classes = []
+    for name, count in zip(names, counts):
+        if name in drop:
+            logger.info(f"  Dropping {name} ({count} samples): excluded")
+        elif count < min_samples:
+            logger.info(f"  Dropping {name} ({count} samples): fewer than {min_samples}")
+        else:
+            keep_classes.append(name)
+    return np.isin(labels, keep_classes)
 
 
-def _normalize(x: np.ndarray) -> np.ndarray:
-    """Min-max normalize array to [0, 1] range."""
-    x_min, x_max = x.min(), x.max()
-    if x_max - x_min < 1e-8:
-        return np.zeros_like(x)
-    return (x - x_min) / (x_max - x_min)
+def encode_labels(labels: np.ndarray) -> Tuple[np.ndarray, Dict[int, str]]:
+    """Alphabetical class order -> integer labels 0..K-1."""
+    classes = sorted(set(labels))
+    class_to_idx = {c: i for i, c in enumerate(classes)}
+    y = np.array([class_to_idx[c] for c in labels], dtype=np.int64)
+    return y, {i: c for c, i in class_to_idx.items()}
 
 
-def select_top_features(
+# =============================================================================
+# Legacy minority augmentation (kept only to reproduce v0.1.0 for comparison)
+# =============================================================================
+
+def legacy_masked_upsample(
     X: np.ndarray,
-    importance: np.ndarray,
-    cpg_ids: List[str],
-    n_features: int = 20000,
-) -> Tuple[np.ndarray, List[str], np.ndarray]:
-
-    n_features = min(n_features, X.shape[1])
-    top_indices = np.argsort(importance)[::-1][:n_features]
-    X_selected = X[:, top_indices]
-    selected_cpgs = [cpg_ids[i] for i in top_indices]
-    
-    logger.info(f"Selected top {n_features} features")
-    
-    return X_selected, selected_cpgs, top_indices
-
-
-# =============================================================================
-# ONT Sample Loading
-# =============================================================================
-
-def load_ont_samples(
-    ont_dir: str,
-    selected_cpgs: List[str],
-    missing_value: float = 0.5,
-) -> Tuple[np.ndarray, List[str], List[float]]:
-
-    ont_dir = Path(ont_dir)
-    ont_files = sorted(ont_dir.glob("*.csv"))
-    
-    if not ont_files:
-        raise ValueError(f"No CSV files found in {ont_dir}")
-    
-    n_samples = len(ont_files)
-    n_features = len(selected_cpgs)
-    
-    # Create lookup for fast CpG matching
-    cpg_to_idx = {cpg: i for i, cpg in enumerate(selected_cpgs)}
-    
-    X_ont = np.full((n_samples, n_features), missing_value, dtype=np.float32)
-    sample_ids = []
-    coverages = []
-    
-    logger.info(f"Loading {n_samples} ONT samples...")
-    
-    for i, f in enumerate(ont_files):
-        df = pd.read_csv(f, index_col=0)
-        sample_id = f.stem
-        sample_ids.append(sample_id)
-        
-        row = df.iloc[0]
-        matched = 0
-        
-        for probe in row.index:
-            if probe in cpg_to_idx:
-                val = row[probe]
-                if not np.isnan(val):
-                    idx = cpg_to_idx[probe]
-                    # Clip extreme values to valid beta range
-                    if val <= 0:
-                        X_ont[i, idx] = 0.05
-                    elif val >= 1:
-                        X_ont[i, idx] = 0.95
-                    else:
-                        X_ont[i, idx] = val
-                    matched += 1
-        
-        coverage = matched / n_features * 100
-        coverages.append(coverage)
-        
-        if (i + 1) % 10 == 0:
-            logger.info(f"  Loaded {i+1}/{n_samples} samples")
-    
-    logger.info(f"Average coverage: {np.mean(coverages):.1f}%")
-    
-    return X_ont, sample_ids, coverages
-
+    y: np.ndarray,
+    mask_ratios: Sequence[float],
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    v0.1.0 --upsample_minority: raise every class to the largest class count
+    with copies that are pre-masked at a random ratio from mask_ratios.
+    Masked CpGs are NaN here (v0.1.0 used 0.5, which the midpoint encoding
+    reproduces). Not recommended: see docs/EXPERIMENTS.md.
+    """
+    rng = np.random.RandomState(seed)
+    classes, counts = np.unique(y, return_counts=True)
+    target = counts.max()
+    X_parts, y_parts = [X], [y]
+    for cls, count in zip(classes, counts):
+        if count >= target:
+            continue
+        src = X[y == cls]
+        n_new = int(target - count)
+        new = np.empty((n_new, X.shape[1]), dtype=np.float32)
+        for i in range(n_new):
+            row = src[rng.randint(0, count)].copy()
+            ratio = mask_ratios[rng.randint(0, len(mask_ratios))]
+            row[rng.random_sample(X.shape[1]) < ratio] = np.nan
+            new[i] = row
+        X_parts.append(new)
+        y_parts.append(np.full(n_new, cls, dtype=y.dtype))
+    logger.info(f"  Legacy masked upsampling: {len(y)} -> {sum(len(p) for p in y_parts)} training rows")
+    return np.vstack(X_parts), np.concatenate(y_parts)

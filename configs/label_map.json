@@ -1,0 +1,12 @@
+{
+  "description": "Label merges applied to the ANNOTATION column before training and to ground-truth files before evaluation. Keys are raw labels, values are model classes. Copied from normalize_and_filter_labels() in SPARSH v0.1.0. Edit this file, not the code, to change the class scheme.",
+  "merge": {
+    "MDS_SF3B1_mut": "MDS",
+    "AML_DEK-NUP214": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "AML_NUP98-r": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "AML_mutated NPM1": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "B-ALL_PAX5 alt": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
+    "B-ALL_BCR-ABL1 like": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
+    "B-ALL_BCR-ABL1": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like"
+  }
+}

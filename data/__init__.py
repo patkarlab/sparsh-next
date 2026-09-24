@@ -1,27 +1,25 @@
-"""
-SPARSH Data module for loading and preprocessing methylation data.
-"""
+"""SPARSH-next data module: array training data and ONT sample loading."""
 
 from .dataset import (
-    load_methylation_pickle,
-    load_ids_to_exclude,
+    apply_label_map,
+    encode_labels,
     filter_classes,
-    upsample_rare_classes,
-    upsample_with_masking_augmentation,
-    create_holdout_split,
-    calculate_feature_importance,
-    select_top_features,
-    load_ont_samples,
+    legacy_masked_upsample,
+    load_ids_to_exclude,
+    load_label_map,
+    load_training_data,
+    subset,
 )
+from .ont import read_ont_csv
 
 __all__ = [
-    "load_methylation_pickle",
-    "load_ids_to_exclude",
+    "apply_label_map",
+    "encode_labels",
     "filter_classes",
-    "upsample_rare_classes",
-    "upsample_with_masking_augmentation",
-    "create_holdout_split",
-    "calculate_feature_importance",
-    "select_top_features",
-    "load_ont_samples",
+    "legacy_masked_upsample",
+    "load_ids_to_exclude",
+    "load_label_map",
+    "load_training_data",
+    "subset",
+    "read_ont_csv",
 ]
