@@ -10,6 +10,31 @@ below 1.0.0 may introduce breaking changes in any minor release.
 
 Development line in a separate repository. Changes are listed against v0.1.0.
 
+### Added in the third round (24 September 2026)
+
+- Per-read call errors (`--call_error_max`, `--val_call_error`, `--eval_call_errors`): each read call is
+  wrong with probability e, so a read is methylated with probability b(1 - 2e) + e; drawn per training
+  sample, fixed for the inner validation sets, and scored as extra conditions such as `binary-err10_0.30`.
+  With e = 0 the inputs, seeds and condition names are those of earlier runs. `compare_runs.py` shows the
+  new rows with their own mean and cohort-expected rows.
+- `configs/label_map_aml_other.json`: AML-MR and AML_MECOM-r trained as one class, `AML_other`, instead of
+  being dropped. Recipes `scaled_wide_err`, `scaled_wide_aml_other`, `scaled_wide_aml_other_err`.
+- Reported call (`evaluation/hierarchy.py`, `configs/class_hierarchy.json`): when no subtype reaches the
+  threshold, the summed probability of a family of related subtypes, then of a lineage, is tried; background
+  classes such as `AML_other` are reported as "AML, no specific subtype". `predict.py` adds the columns
+  `reported_call`, `reported_level`, `family`, `lineage` and their probabilities, copies the hierarchy file
+  into its output, and scores the reported call when a truth file is given (`--hierarchy`).
+- `scripts/hierarchy_report.py`: the fallback on cross-validation predictions (share called and accuracy
+  at each level, expected on a cohort's coverage mix), per-class outcomes and the most confused class pairs.
+- `scripts/score_excluded.py` and `jobs/score_excluded.pbs`: how a run calls the training arrays of classes
+  it was not trained on, under the same simulated reads as cross-validation.
+- `scripts/ont_call_error.py` and `jobs/ont_call_error.pbs`: label-free per-read call error of nanopore
+  samples, from CpGs that are methylated (or unmethylated) in almost every training array, with the
+  simulated rate that matches it.
+- `models/ensemble.py` (run loading and ensemble probabilities shared by `predict.py` and
+  `score_excluded.py`) and `evaluation/conditions.py` (condition names and summary rows).
+- `tests/smoke_test_round3.sh`: these additions end to end on synthetic data (about 30 seconds).
+
 ### Changed
 
 - **Class imbalance.** Balanced batch sampler without class weights by default.

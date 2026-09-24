@@ -18,10 +18,17 @@ Ground truth: CSV with columns sample,true_label. The training label map is
 applied to it, so raw subtype names are scored against the merged classes.
 Samples whose true label is not a model class are reported and counted as
 errors in the overall accuracy, never dropped silently.
+
+Reported call: besides the top class, every sample gets the most specific call
+that reaches the threshold (subtype, family or lineage; see
+evaluation/hierarchy.py and configs/class_hierarchy.json). The hierarchy file
+used is copied into the output folder. "callable" keeps its meaning (the top
+class reaches the threshold); "reported_level" shows the fallback.
 """
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -34,10 +41,23 @@ sys.path.insert(0, str(REPO))
 
 from data.dataset import apply_label_map  # noqa: E402
 from data.ont import DUPLICATE_RULES, read_ont_csv  # noqa: E402
+from evaluation.hierarchy import (default_hierarchy_path, hierarchical_calls, load_hierarchy,  # noqa: E402
+                                  score_calls, summarize_calls)
 from evaluation.metrics import balanced_accuracy, confusion_frame, expected_calibration_error  # noqa: E402
-from models.sparse_nn import load_model, predict_logits, softmax_np  # noqa: E402
+from models.ensemble import ensemble_probs, load_models, load_run  # noqa: E402
 
 COVERAGE_BINS = [0.0, 0.05, 0.10, 0.20, 0.30, 1.01]
+
+
+def json_safe(obj):
+    """NaN -> None, so summary_metrics.json stays strict JSON."""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, float) and not np.isfinite(obj):
+        return None
+    return obj
 
 
 def parse_args():
@@ -57,25 +77,11 @@ def parse_args():
     p.add_argument("--duplicate_probes", choices=DUPLICATE_RULES, default="mean",
                    help="Probe IDs repeated in a file: mean of the copies with a value (default), "
                         "first column only, or refuse the file (see data/ont.py)")
+    p.add_argument("--hierarchy", default=None,
+                   help="Class hierarchy for the reported call (default configs/class_hierarchy.json; 'none' = "
+                        "lineage by class-name prefix only, no families)")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
-
-
-def load_models(model_dir: Path, config: dict, use: str, device: str):
-    inf = config["inference"]
-    folds, final = inf.get("fold_models"), inf.get("final_model")
-    if use == "auto":
-        use = "ensemble" if folds else "final"
-    entries = folds if use == "ensemble" else ([final] if final else None)
-    if not entries:
-        sys.exit(f"No {use} weights recorded in {model_dir}/config.json")
-    models = []
-    for entry in entries:
-        path = model_dir / entry["file"]
-        if not path.exists():
-            sys.exit(f"Missing weights file {path}")
-        models.append((load_model(path, config["model"], device), float(entry.get("temperature", 1.0))))
-    return use, models
 
 
 def coverage_bin(c: float) -> str:
@@ -94,11 +100,14 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     device = args.device if (not args.device.startswith("cuda") or torch.cuda.is_available()) else "cpu"
 
-    config = json.loads((model_dir / "config.json").read_text())
-    idx_to_class = {int(k): v for k, v in json.loads((model_dir / "class_mapping.json").read_text()).items()}
-    classes = [idx_to_class[i] for i in range(len(idx_to_class))]
-    cpg_ids = json.loads((model_dir / "selected_cpgs.json").read_text())
-    label_map = json.loads((model_dir / "label_map.json").read_text()).get("merge", {})
+    config, classes, cpg_ids, label_map = load_run(model_dir)
+    if args.hierarchy is None:
+        hierarchy_path = default_hierarchy_path()
+    else:
+        hierarchy_path = None if args.hierarchy.lower() == "none" else Path(args.hierarchy)
+    hierarchy = load_hierarchy(str(hierarchy_path) if hierarchy_path else None, classes)
+    if hierarchy_path:
+        shutil.copy(hierarchy_path, out / "class_hierarchy_used.json")
     threshold = args.threshold if args.threshold is not None else config["inference"].get("threshold", 0.90)
     clip = config["inference"].get("clip_observed")
     use, models = load_models(model_dir, config, args.use, device)
@@ -149,7 +158,7 @@ def main():
               f"--duplicate_probes {args.duplicate_probes}")
 
     # ------------------------------------------------------------ predict
-    probs = np.mean([softmax_np(predict_logits(m, X, device), t) for m, t in models], axis=0)
+    probs = ensemble_probs(models, X, device)
     order = np.argsort(-probs, axis=1)
     meta["prediction"] = [classes[i] for i in order[:, 0]]
     meta["confidence"] = probs[np.arange(len(probs)), order[:, 0]]
@@ -161,11 +170,16 @@ def main():
     enough = meta["coverage_pct"] >= 100.0 * args.min_coverage
     meta["callable"] = enough & (meta["confidence"] >= threshold)
     meta["note"] = np.where(enough, "", f"coverage below {100 * args.min_coverage:.1f}%")
+    calls = hierarchical_calls(probs, classes, hierarchy, threshold, enough.to_numpy())
+    meta = pd.concat([meta, calls], axis=1)
     prob_df = pd.DataFrame(probs, columns=[f"prob_{c}" for c in classes])
     pd.concat([meta, prob_df], axis=1).to_csv(out / "predictions.csv", index=False, float_format="%.5f")
     print(f"Predicted {len(meta)} samples ({len(errors)} unreadable); coverage median "
           f"{meta['coverage_pct'].median():.1f}% (range {meta['coverage_pct'].min():.1f}-"
           f"{meta['coverage_pct'].max():.1f}%); callable at >= {threshold:.2f}: {int(meta['callable'].sum())}")
+    levels = meta["reported_level"].value_counts()
+    print("Reported at: " + ", ".join(f"{lev} {int(levels.get(lev, 0))}"
+                                      for lev in ("subtype", "no_subtype", "family", "lineage", "none")))
 
     if not args.ground_truth:
         return
@@ -191,6 +205,9 @@ def main():
     ev["correct"] = ev["prediction"] == ev["true_label"]
     ev["top2_correct"] = ev["correct"] | (ev["top2_class"] == ev["true_label"])
     ev["coverage_bin"] = [coverage_bin(c / 100.0) for c in ev["coverage_pct"]]
+    scored = score_calls(ev["true_label"], ev["prediction"], ev, hierarchy)
+    ev["reported_correct"] = scored["reported_correct"].to_numpy()
+    ev["lineage_correct"] = scored["lineage_correct"].to_numpy()
     ev.to_csv(out / "evaluation_per_sample.csv", index=False, float_format="%.5f")
 
     ins = ev[ev["in_scheme"]]
@@ -216,6 +233,11 @@ def main():
             "callable_share": float(ins["callable"].mean()) if len(ins) else None,
             "accuracy_callable": float(ins.loc[ins["callable"], "correct"].mean()) if ins["callable"].any() else None,
             "ece": expected_calibration_error(ins["confidence"].to_numpy(), ins["correct"].to_numpy()) if len(ins) else None,
+        },
+        "reported_call": {
+            "hierarchy": str(hierarchy_path) if hierarchy_path else None,
+            "all_with_truth": json_safe(summarize_calls(ev, scored)),
+            "in_scheme": json_safe(summarize_calls(ev[ev["in_scheme"]], scored[ev["in_scheme"].to_numpy()])),
         },
     }
     by_cov = ev.groupby("coverage_bin").agg(

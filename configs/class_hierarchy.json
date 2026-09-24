@@ -1,0 +1,29 @@
+{
+  "description": "Reporting hierarchy for scripts/predict.py and scripts/hierarchy_report.py (see evaluation/hierarchy.py). When no subtype reaches the threshold, the summed probability of a family, then of a lineage, is tried. Lineage: the first matching prefix in lineage_by_prefix, unless the class is listed in lineage. Families: a starting proposal from the overlaps seen in the lab's t-SNE of AL_24Sep2026 (HOX-related AML; T-ALL other than TAL1); review them against the cross-validation confusion pairs from scripts/hierarchy_report.py, and fix this file before a locked nanopore set is scored. Names of classes a model does not have are ignored. no_subtype_classes are background classes reported as '<lineage>, no specific subtype'.",
+  "lineage_by_prefix": [
+    ["APL", "AML"],
+    ["AMKL", "AML"],
+    ["AML", "AML"],
+    ["B-ALL", "B-ALL"],
+    ["T-ALL", "T-ALL"],
+    ["BPDCN", "BPDCN"],
+    ["Normal", "Normal marrow"],
+    ["MPAL", "Mixed phenotype"],
+    ["AL_", "Ambiguous lineage"]
+  ],
+  "lineage": {},
+  "families": {
+    "AML, HOX-related (NPM1, NUP98, DEK::NUP214, UBTF or KMT2A-r)": [
+      "AML_HOXdys_NPM1_NUP98_DEK-NUP214_UBTF",
+      "AML_mutated_NPM1_Nup98_DEKnup214",
+      "AML_KMT2A-r"
+    ],
+    "T-ALL, other than TAL1 (HOXA/ETP, TLX1, TLX3 or NKX2)": [
+      "T-ALL_HOXA9_ETP",
+      "T-ALL_TLX1",
+      "T-ALL_TLX3",
+      "T-ALL_NKX2"
+    ]
+  },
+  "no_subtype_classes": ["AML_other"]
+}

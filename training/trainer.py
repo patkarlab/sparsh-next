@@ -11,8 +11,8 @@ Protocol for each outer fold
    schedule, early stopping, checkpoint choice and temperature calibration.
 3. The outer fold is never used for any decision. It is scored once, under
    fixed conditions: dense arrays and simulated ONT sparsity (mask and reads)
-   at several coverages, with corruption seeded per sample so every run is
-   judged on identical inputs.
+   at several coverages and, optionally, per-read call error rates, with
+   corruption seeded per sample so every run is judged on identical inputs.
 
 Class imbalance (cfg.imbalance)
 -------------------------------
@@ -38,7 +38,9 @@ import torch.optim as optim
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
 from data.dataset import legacy_masked_upsample
-from models.corruption import READ_SIMS, corrupt_rows, corrupt_torch, sample_observed_fraction
+from evaluation.conditions import condition_name
+from models.corruption import (READ_SIMS, corrupt_rows, corrupt_torch, sample_call_error,
+                               sample_observed_fraction)
 from models.sparse_nn import SparseNN, predict_logits
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,12 @@ class TrainConfig:
     cov_max: float = 0.5
     mask_start: float = 0.97
     mask_end: float = 0.80
+    # per-read call errors (read simulations only): training draws a rate per sample, uniform on
+    # [0, call_error_max]; the inner validation sets use val_call_error; the outer folds are scored
+    # at every rate in eval_call_errors (0 = no errors, the conditions earlier runs used)
+    call_error_max: float = 0.0
+    val_call_error: float = 0.0
+    eval_call_errors: Tuple[float, ...] = (0.0,)
     # validation and evaluation
     n_folds: int = 5
     inner_val_frac: float = 0.15
@@ -267,7 +275,8 @@ def make_inner_sets(X: np.ndarray, sample_ids: np.ndarray, cfg: "TrainConfig") -
     """Fixed corrupted copies of the inner validation samples, one per validation coverage."""
     sets = []
     for c in cfg.val_coverages:
-        Xc = corrupt_rows(X, sample_ids, c, cfg.val_sim, cfg.seed, salt=1)
+        err = cfg.val_call_error if cfg.val_sim in READ_SIMS else 0.0
+        Xc = corrupt_rows(X, sample_ids, c, cfg.val_sim, cfg.seed, salt=1, call_error=err)
         sets.append(clip_observed(Xc, cfg.clip_observed) if cfg.val_sim in READ_SIMS else Xc)
     return sets
 
@@ -333,7 +342,10 @@ def train_one_model(
                 len(batch), cfg.coverage_mode, epoch, cfg.epochs,
                 cfg.cov_min, cfg.cov_max, cfg.mask_start, cfg.mask_end, device, cfg.coverage_dist,
             )
-            xb = corrupt_torch(xb, frac, cfg.train_sim)
+            err = None
+            if cfg.train_sim in READ_SIMS:
+                err = sample_call_error(len(batch), cfg.call_error_max, device)
+            xb = corrupt_torch(xb, frac, cfg.train_sim, err)
             optimizer.zero_grad(set_to_none=True)
             logits = model(xb)
             loss = criterion(logits, yb)
@@ -394,16 +406,22 @@ def train_one_model(
 # Evaluation conditions and nested cross-validation
 # =============================================================================
 
-def evaluation_conditions(eval_coverages: Sequence[float], eval_sims: Sequence[str] = ("reads", "mask")
-                          ) -> List[Tuple[str, Optional[str], Optional[float]]]:
-    """(name, simulation, observed fraction); 'dense' means the array profile as measured."""
-    conds = [("dense", None, None)]
+def evaluation_conditions(eval_coverages: Sequence[float], eval_sims: Sequence[str] = ("reads", "mask"),
+                          eval_call_errors: Sequence[float] = (0.0,)
+                          ) -> List[Tuple[str, Optional[str], Optional[float], float]]:
+    """
+    (name, simulation, observed fraction, call error); 'dense' means the array profile as measured.
+    Call errors apply to the read simulations only; mask conditions are scored once, without them.
+    """
+    conds = [("dense", None, None, 0.0)]
     for sim in eval_sims:
-        for c in eval_coverages:
-            conds.append((f"{sim}_{c:.2f}", sim, float(c)))
+        errors = [float(e) for e in eval_call_errors] if sim in READ_SIMS else [0.0]
+        for err in dict.fromkeys(errors):
+            for c in eval_coverages:
+                conds.append((condition_name(sim, c, err), sim, float(c), err))
     names = [c[0] for c in conds]
     if len(set(names)) != len(names):
-        raise ValueError(f"--eval_coverages give duplicate condition names at 2 decimals: {names}")
+        raise ValueError(f"--eval_coverages or --eval_call_errors give duplicate condition names: {names}")
     return conds
 
 
@@ -420,10 +438,10 @@ def cross_validate(
 ) -> Dict:
     """Nested CV. Returns out-of-fold logits per evaluation condition and per-fold records."""
     device = resolve_device(cfg.device)
-    conditions = evaluation_conditions(cfg.eval_coverages, cfg.eval_sims)
+    conditions = evaluation_conditions(cfg.eval_coverages, cfg.eval_sims, cfg.eval_call_errors)
     folds = split_indices(y, groups, cfg.n_folds, cfg.seed)
     n = len(y)
-    logits = {name: np.full((n, n_classes), np.nan, dtype=np.float32) for name, _, _ in conditions}
+    logits = {name: np.full((n, n_classes), np.nan, dtype=np.float32) for name, _, _, _ in conditions}
     fold_of = np.full(n, -1, dtype=np.int64)
     temperature_of = np.full(n, np.nan, dtype=np.float64)
     records = []
@@ -444,8 +462,8 @@ def cross_validate(
         del inner_sets
         model = result["model"]
 
-        for name, sim, frac in conditions:
-            Xc = corrupt_rows(X[te], sample_ids[te], frac, sim, cfg.eval_seed, salt=2)
+        for name, sim, frac, err in conditions:
+            Xc = corrupt_rows(X[te], sample_ids[te], frac, sim, cfg.eval_seed, salt=2, call_error=err)
             if sim in READ_SIMS:
                 Xc = clip_observed(Xc, cfg.clip_observed)
             logits[name][te] = predict_logits(model, Xc, device, cfg.eval_batch_size)

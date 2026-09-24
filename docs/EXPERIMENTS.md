@@ -72,6 +72,37 @@ python scripts/compare_runs.py ~/sparsh_next_runs/{wide,scaled_wide,scaled_wide_
 
 The row *your ONT samples* places every sample's coverage between the two nearest evaluated coverages, interpolates the metric there and averages: the value expected on this cohort, computed from coverage alone.
 
+## Third round: call errors, grouped classes, reported call
+
+The blinded nanopore scoring of 24 September 2026 (summary only: 207 samples with truth, model without AML-MR and AML_MECOM-r) found that real samples confuse classes the way simulated data at much lower coverage do, and that most confident errors were diagnoses with no model class. Three changes follow; the 254 nanopore samples informed them, so they are now a development set, and an independent estimate of the result needs new samples.
+
+**1. Measure the call error (label-free).** `qsub -v RUN_NAME=scaled_wide,ONT_DIR=/path/to/ont_folder jobs/ont_call_error.pbs`. At CpGs methylated (or unmethylated) in almost every training array, whatever the subtype, a nanopore call that disagrees with the arrays is an error of the nanopore data. The log gives the *matched call error*: the simulated per-read error rate that produces the same disagreement. The recipes below assume about 10%. If the measured rate is clearly different, pass `EXTRA_ARGS="--val_call_error <rate> --call_error_max <twice the rate> --eval_call_errors 0 <rate>"`. If it is near zero, call errors do not explain the lost accuracy (dilution by normal cells and array-to-nanopore differences at subtype-specific CpGs remain), and the error recipes are not expected to help.
+
+**2. Runs.** Each against the second-round choice, `scaled_wide`. All three are scored on the outer folds without call errors (the second-round rows) and at 10% (`binary-err10_*`, `oneread-err10_*`):
+
+| Recipe | Differs from `scaled_wide` by | Question it answers |
+| --- | --- | --- |
+| `scaled_wide_aml_other` | AML-MR and AML_MECOM-r trained as one class, `AML_other`, reported as "AML, no specific subtype" (`configs/label_map_aml_other.json`) | Group the hard classes instead of dropping them |
+| `scaled_wide_aml_other_err` | The same classes, plus per-read call errors drawn per training sample from 0–20%, with inner validation (early stopping, temperature) at 10% | Does training on noisy reads help on noisy reads? (against `scaled_wide_aml_other`) |
+| `scaled_wide_err` | Call errors as above, with the class set of the job's settings | The same question for another class set; its baseline is `scaled_wide` with `EXTRA_ARGS="--eval_call_errors 0 0.1"`, and both runs take the same class options (for the dropped scheme, add `--exclude_classes AML-MR AML_MECOM-r` to both) |
+
+`bash jobs/submit_experiments.sh scaled_wide_aml_other scaled_wide_aml_other_err` runs the first pair. The comparison that decides is between runs with the same classes, on the `-err10` rows expected on the cohort's coverage mix (`compare_runs.py --ont_coverage`). Differences of 1–2 points are within single-run noise; run seeds 42, 43 and 44 of the recipes that decide.
+
+**3. Dropping or grouping.** The two class sets cannot be compared on balanced accuracy, because the class lists differ. Compare instead:
+- what the dropped-class model does with the classes it never saw: `qsub -v RUN_NAME=scaled_wide_no_mr_mecom jobs/score_excluded.pbs` gives the share of AML-MR and AML_MECOM-r arrays called at 0.90 or more as some other class (every such call is wrong), and where they go;
+- what grouping costs the other classes: `by_class_*.csv` from `scripts/hierarchy_report.py`, class by class, for the classes both models share (recall, confident errors, and how often a class is called `AML_other`).
+
+Suggested rule, to fix before looking: group if the dropped-class model calls at least 20% of those arrays confidently as another class at 30% coverage (near the cohort's median of 38%), and grouping lowers no shared class's recall by more than 5 points at the same coverage.
+
+**4. Reported call.** `scripts/predict.py` now reports each sample at the most specific level that reaches the threshold: subtype, family of related subtypes, or lineage (`configs/class_hierarchy.json`). What this adds, on cross-validation predictions:
+
+```bash
+python scripts/hierarchy_report.py ~/sparsh_next_runs/{scaled_wide_no_mr_mecom,scaled_wide_aml_other} \
+    --ont_coverage ~/sparsh_next_runs/data_checks/ont_coverage_AL.csv
+```
+
+It prints, per condition, the share called at subtype level, the share called at any level and the accuracy of those calls, and writes per-class outcomes and the most confused class pairs to `<run>/hierarchy_report/`. The families in `configs/class_hierarchy.json` are a starting proposal (HOX-related AML; T-ALL other than TAL1). Revise them from biology and from the confused pairs in cross-validation, never from nanopore results, and fix the file before a locked nanopore set is scored. A family is only worth having if its members are confused with each other and the family call means something clinically.
+
 ## Scoring on real nanopore samples
 
 Keep a labelled nanopore cohort for one blinded scoring of the chosen model. Every choice (recipe, threshold, preprocessing) is made on cross-validation and on label-free properties of the nanopore files, such as coverage and value type. Run `jobs/predict.pbs` without `TRUTH`; whoever holds the labels scores `predictions.csv`. Comparing several models on the cohort turns it into a selection set and makes its accuracy optimistic; if that is needed, hold part of the cohort back untouched.

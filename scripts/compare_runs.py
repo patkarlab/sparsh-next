@@ -9,9 +9,10 @@ SPARSH-next classifies nanopore samples only, so the tables show the simulated
 nanopore conditions, named <simulation>_<f>, where a fraction f of the model's
 CpGs is covered: reads_* (the methylated fraction of the reads at each CpG),
 binary_* (one 0/1 call per CpG from its reads) and oneread_* (the call of a
-single read). --all_conditions adds the dense array profile and the mask_*
+single read). Runs scored with per-read call errors (--eval_call_errors) add
+rows such as binary-err10_* (10% of read calls wrong). --all_conditions adds the dense array profile and the mask_*
 conditions (array beta values at the covered CpGs), which no nanopore run
-produces. For each simulation, a row gives the mean over its coverages, and
+produces. For each simulation (and call error), a row gives the mean over its coverages, and
 with --ont_coverage (the CSV written by scripts/ont_coverage.py) a second row
 gives the value expected on those samples: each sample's coverage is placed
 between the two nearest evaluated coverages and the metric interpolated there.
@@ -40,16 +41,8 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from models.corruption import READ_SIMS  # noqa: E402
-
-
-def split_condition(name: str):
-    """'binary_0.30' -> ('binary', 0.30); 'dense' -> ('dense', None)."""
-    sim, _, cov = str(name).rpartition("_")
-    try:
-        return sim, float(cov)
-    except ValueError:
-        return str(name), None
+from evaluation.conditions import (add_summary_rows, is_nanopore, nanopore_labels,  # noqa: E402
+                                   read_ont_coverage, split_condition)
 
 
 def callable_at_accuracy(confidence: np.ndarray, correct: np.ndarray, target: float):
@@ -80,30 +73,6 @@ def trained_coverage(t: dict) -> str:
     return f"{round(100 * lo, 2):g}-{round(100 * hi, 2):g}% {dist}"
 
 
-def add_summary_rows(table: pd.DataFrame, ont_cov, with_mean=True) -> pd.DataFrame:
-    """Mean over each nanopore simulation's coverages and, if given, the value expected on the ONT samples."""
-    rows = {}
-    for sim in READ_SIMS:
-        members = [(c, split_condition(c)[1]) for c in table.index if split_condition(c)[0] == sim]
-        members = [(c, f) for c, f in members if f is not None]
-        if not members:
-            continue
-        members.sort(key=lambda m: m[1])
-        names, covs = [m[0] for m in members], np.array([m[1] for m in members])
-        if with_mean:
-            rows[f"mean over {sim}_*"] = table.loc[names].mean()
-        if ont_cov is not None and len(ont_cov):
-            expected = {}
-            for run in table.columns:
-                values = table.loc[names, run].to_numpy(dtype=float)
-                ok = np.isfinite(values)
-                expected[run] = float(np.mean(np.interp(ont_cov, covs[ok], values[ok]))) if ok.any() else np.nan
-            rows[f"your ONT samples, {sim}_*"] = pd.Series(expected)
-    for label, row in rows.items():
-        table.loc[label] = row
-    return table
-
-
 def main():
     p = argparse.ArgumentParser(description="Compare SPARSH-next runs")
     p.add_argument("runs", nargs="+", help="Run output directories")
@@ -122,10 +91,10 @@ def main():
 
     ont_cov = None
     if args.ont_coverage:
-        oc = pd.read_csv(args.ont_coverage)
-        if "coverage_pct" not in oc.columns:
-            sys.exit(f"{args.ont_coverage} has no coverage_pct column (write it with scripts/ont_coverage.py)")
-        ont_cov = pd.to_numeric(oc["coverage_pct"], errors="coerce").dropna().to_numpy() / 100.0
+        try:
+            ont_cov = read_ont_coverage(args.ont_coverage)
+        except ValueError as e:
+            sys.exit(str(e))
         print(f"ONT coverage from {args.ont_coverage}: {len(ont_cov)} samples, median {100 * np.median(ont_cov):.1f}% "
               f"(range {100 * ont_cov.min():.1f}-{100 * ont_cov.max():.1f}%)")
 
@@ -140,18 +109,20 @@ def main():
             sys.exit(f"{f} not found (is this a finished SPARSH-next run?)")
         table = pd.read_csv(f).set_index("condition")
         if not args.all_conditions:
-            table = table[[split_condition(c)[0] in READ_SIMS for c in table.index]]
+            table = table[[is_nanopore(c) for c in table.index]]
         tables[name], run_dirs[name] = table, run
         cfg = json.loads((run / "config.json").read_text())
         t, m, d = cfg["training"], cfg["model"], cfg["data"]
         settings.append({"run": name, "imbalance": t["imbalance"], "encoding": m["input_encoding"],
                          "train_sim": t["train_sim"], "trained_coverage": trained_coverage(t),
+                         "call_error": f"0-{t['call_error_max']:g}" if t.get("call_error_max") else "0",
                          "calibrated": t["calibrate"], "n_samples": d["n_samples"], "n_classes": m["n_classes"],
                          "median_best_epoch": pd.Series([r["best_epoch"] for r in cfg["cv_folds"]]).median()})
         data_keys.add((d["data_path"], d["n_samples"], d["n_cpgs"], d.get("cpg_list"),
                        json.dumps(d.get("class_counts"), sort_keys=True), d.get("groups_file"), d.get("group_col")))
         eval_keys.add(t["eval_seed"])
-        eval_grids.add((tuple(t.get("eval_sims", ["reads", "mask"])), tuple(t["eval_coverages"])))
+        eval_grids.add((tuple(t.get("eval_sims", ["reads", "mask"])), tuple(t["eval_coverages"]),
+                        tuple(t.get("eval_call_errors", [0.0]))))
         splits.add((t["seed"], t["n_folds"]))
 
     print(pd.DataFrame(settings).to_string(index=False))
@@ -162,20 +133,21 @@ def main():
         print("\nNote: runs use different fold splits (seed, fold count or grouping). Samples and evaluation "
               "inputs are identical, so differences include run-to-run noise; this is how to measure that noise.")
     if len(eval_grids) > 1:
-        print("\nNote: runs were scored on different simulations or coverages; a blank cell means that run "
-              "was not scored on that row.")
+        print("\nNote: runs were scored on different simulations, coverages or call errors; a blank cell means "
+              "that run was not scored on that row.")
     if not args.all_conditions:
         print("\nSimulated nanopore conditions only; --all_conditions adds dense and mask_*.")
     if ont_cov is not None:
-        for sim in READ_SIMS:
-            covs = sorted({split_condition(c)[1] for t in tables.values() for c in t.index
-                           if split_condition(c)[0] == sim and split_condition(c)[1] is not None})
+        all_conditions = [c for t in tables.values() for c in t.index]
+        for label in nanopore_labels(all_conditions):
+            covs = sorted({split_condition(c)[1] for c in all_conditions
+                           if is_nanopore(c) and split_condition(c)[0] == label})
             if covs:
                 out = int(((ont_cov < covs[0]) | (ont_cov > covs[-1])).sum())
                 if out:
                     verb = "lies" if out == 1 else "lie"
-                    print(f"Note: {out} of {len(ont_cov)} ONT samples {verb} outside the evaluated {sim}_* coverages "
-                          f"({100 * covs[0]:g}-{100 * covs[-1]:g}%) and take the value at the nearest end.")
+                    print(f"Note: {out} of {len(ont_cov)} ONT samples {verb} outside the evaluated {label}_* "
+                          f"coverages ({100 * covs[0]:g}-{100 * covs[-1]:g}%) and take the value at the nearest end.")
 
     stacked = []
     for metric in args.metrics:

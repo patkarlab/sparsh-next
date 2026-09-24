@@ -1,0 +1,24 @@
+#!/bin/bash
+#PBS -N sparsh_next_call_error
+#PBS -q short
+#PBS -l select=1:ncpus=8:mem=48gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+# Label-free per-read call error of nanopore samples (scripts/ont_call_error.py). CPU only.
+# Reads the run's training pickle and CpG list and the nanopore files' values; no labels.
+# Submit from the sparsh-next folder, for example:
+#   qsub -v RUN_NAME=scaled_wide,ONT_DIR=/home/patkarlab/AL_Methylation_Classifier/data/ont_samples_AL jobs/ont_call_error.pbs
+# Results: printed in the job log, and one line per file in $RUNS_DIR/data_checks/ont_call_error_<ONT folder name>.csv
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+[ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
+source "${SETTINGS_FILE:-jobs/settings.sh}"
+source jobs/common.sh
+require_file "run" "$RUNS_DIR/${RUN_NAME:?Set RUN_NAME}/config.json" "No finished training run named $RUN_NAME in $RUNS_DIR"
+[ -d "${ONT_DIR:?Set ONT_DIR}" ] || { echo "ERROR: ONT_DIR is not a folder: $ONT_DIR"; exit 1; }
+mkdir -p "$RUNS_DIR/data_checks"
+
+# shellcheck disable=SC2086  # EXTRA_ARGS is a word list
+python scripts/ont_call_error.py "$ONT_DIR" --run "$RUNS_DIR/$RUN_NAME" \
+  --output "$RUNS_DIR/data_checks/ont_call_error_$(basename "$ONT_DIR").csv" ${EXTRA_ARGS:-}

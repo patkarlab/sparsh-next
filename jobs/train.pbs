@@ -13,7 +13,8 @@
 #   qsub -v RECIPE=default jobs/train.pbs
 # RECIPE is one of: default, legacy, scaled, mask_sim, schedule (the five comparison runs),
 # scaled_schedule, or final (default recipe plus one extra model on all samples); or, matched to the lab's
-# nanopore files (0/1 values, coverage up to 87%): wide, scaled_wide, scaled_wide_log. See docs/EXPERIMENTS.md.
+# nanopore files (0/1 values, coverage up to 87%): wide, scaled_wide, scaled_wide_log; third round:
+# scaled_wide_err, scaled_wide_aml_other, scaled_wide_aml_other_err. See docs/EXPERIMENTS.md.
 # Optional: RUN_NAME=... (folder name; defaults to the recipe name), SEED=... (default 42), and
 # EXTRA_ARGS="..." for any other scripts/train.py option, for example
 #   qsub -v RECIPE=default,RUN_NAME=default_seed43,SEED=43 jobs/train.pbs
@@ -34,6 +35,14 @@ require_file DATA_PATH "$DATA_PATH"
 WIDE="--train_sim binary --val_sim binary --eval_sims binary oneread --cov_min 0.02 --cov_max 0.95 \
 --val_coverages 0.05 0.1 0.2 0.3 0.5 0.7 0.9 --eval_coverages 0.05 0.1 0.2 0.3 0.5 0.7 0.9"
 
+# Third round. ERR: per-read call errors, drawn per training sample from 0-20%, inner validation at 10%.
+# EVAL_ERR: outer folds scored without errors (the second-round rows) and at 10%, in every third-round recipe,
+# so each error-trained run has a baseline with the same classes and rows. AML_OTHER: AML-MR and AML_MECOM-r
+# trained as one class, AML_other, reported as "AML, no specific subtype".
+EVAL_ERR="--eval_call_errors 0 0.1"
+ERR="--call_error_max 0.2 --val_call_error 0.1 $EVAL_ERR"
+AML_OTHER="--label_map configs/label_map_aml_other.json"
+
 RECIPE="${RECIPE:-default}"
 case "$RECIPE" in
   default)  RECIPE_ARGS="" ;;
@@ -46,6 +55,9 @@ case "$RECIPE" in
   wide)            RECIPE_ARGS="$WIDE --coverage_dist uniform" ;;
   scaled_wide)     RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled" ;;
   scaled_wide_log) RECIPE_ARGS="$WIDE --coverage_dist loguniform --input_encoding scaled" ;;
+  scaled_wide_err)           RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $ERR" ;;
+  scaled_wide_aml_other)     RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $AML_OTHER $EVAL_ERR" ;;
+  scaled_wide_aml_other_err) RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $AML_OTHER $ERR" ;;
   *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
 esac
 RUN_NAME="${RUN_NAME:-$RECIPE}"

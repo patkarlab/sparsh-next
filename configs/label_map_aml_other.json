@@ -1,0 +1,14 @@
+{
+  "description": "Label map for the grouped scheme: AML-MR and AML_MECOM-r are trained as one class, AML_other, which scripts/predict.py reports as 'AML, no specific subtype' (configs/class_hierarchy.json lists it under no_subtype_classes). Raw labels of other AML without a methylation class of their own, for example AML NOS arrays if they are added to the training pickle, can be mapped to AML_other here; a mapped label is no longer removed by EXCLUDE_PREFIXES, which acts on the labels after this map. The map is saved with each model and applied to ONT truth files, so a truth label listed here is scored against AML_other. Also contains every merge of configs/label_map.json. Use with --label_map configs/label_map_aml_other.json.",
+  "merge": {
+    "MDS_SF3B1_mut": "MDS",
+    "AML_DEK-NUP214": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "AML_NUP98-r": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "AML_mutated NPM1": "AML_mutated_NPM1_Nup98_DEKnup214",
+    "B-ALL_PAX5 alt": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
+    "B-ALL_BCR-ABL1 like": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
+    "B-ALL_BCR-ABL1": "B-ALL_PAX5_BCR-ABL1_B-ALL_BCR-ABL1_like",
+    "AML-MR": "AML_other",
+    "AML_MECOM-r": "AML_other"
+  }
+}
