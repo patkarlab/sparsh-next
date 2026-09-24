@@ -1,0 +1,14 @@
+# SPARSH runtime dependencies
+# Python >= 3.10 recommended (developed/tested on CPython 3.10).
+#
+# PyTorch: install the build matching your CUDA toolkit. The reference job runs
+# on CUDA 12.3; see https://pytorch.org/get-started/locally/ for the right wheel
+# (e.g. the cu121/cu124 index). The pin below is a minimum, not a CUDA selector.
+
+torch>=2.0
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+optuna>=3.4
+matplotlib>=3.7
+seaborn>=0.13

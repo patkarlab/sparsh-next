@@ -1,0 +1,75 @@
+# =============================================================================
+# SPARSH .gitignore
+# Goal: never commit data, model weights, run outputs, cluster logs, or secrets.
+# =============================================================================
+
+# --- Data (never commit patient/methylation data or reference cohorts) -------
+Dataset/
+data/**/*.pkl
+data/**/*.pickle
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.parquet
+*.feather
+# Note: the `data/` PACKAGE (data/dataset.py, data/__init__.py) IS tracked.
+#       Only data FILES inside it are ignored by the patterns above.
+
+# --- Run outputs and trained models ------------------------------------------
+outputs/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# --- HPC scheduler logs (PBS / Slurm) ----------------------------------------
+*.o[0-9]*
+*.e[0-9]*
+*.pbs.o*
+*.pbs.e*
+slurm-*.out
+core.[0-9]*
+
+# --- Secrets / credentials / environment -------------------------------------
+.env
+.env.*
+*.key
+*.pem
+*.crt
+credentials*
+secrets*
+*token*
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.installed.cfg
+*.egg
+.Python
+venv/
+.venv/
+env/
+ENV/
+.ipynb_checkpoints/
+
+# --- Tooling / OS / IDE ------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+optuna_study*.db
