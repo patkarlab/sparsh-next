@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N sparsh_next_predict
+#PBS -q gpu
+#PBS -l select=1:ncpus=4:ngpus=1:mem=64gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+# Submit from the sparsh-next folder, for example:
+#   qsub -v RUN_NAME=default,ONT_DIR=/path/to/ont_csvs,TRUTH=/path/to/truth.csv jobs/predict.pbs
+# Results go to $RUNS_DIR/$RUN_NAME/ont_eval (a new folder inside the run).
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source jobs/settings.sh
+source jobs/common.sh
+
+python scripts/predict.py \
+  --model_dir "$RUNS_DIR/${RUN_NAME:?Set RUN_NAME}" \
+  --ont_dir "${ONT_DIR:?Set ONT_DIR}" \
+  --output_dir "$RUNS_DIR/$RUN_NAME/${EVAL_NAME:-ont_eval}" \
+  ${TRUTH:+--ground_truth "$TRUTH"}

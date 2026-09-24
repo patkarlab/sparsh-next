@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -N sparsh_next_checks
+#PBS -l select=1:ncpus=4:mem=120gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+# CPU job; add a "#PBS -q" line for your CPU queue if the cluster needs one.
+# Submit from the sparsh-next folder:  qsub jobs/check_data.pbs
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source jobs/settings.sh
+source jobs/common.sh
+
+python scripts/check_data.py \
+  --data_path "$DATA_PATH" \
+  --output_dir "$RUNS_DIR/data_checks" \
+  ${EXCLUDE_IDS:+--exclude_ids "$EXCLUDE_IDS"} \
+  --exclude_prefixes $EXCLUDE_PREFIXES

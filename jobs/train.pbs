@@ -1,0 +1,38 @@
+#!/bin/bash
+#PBS -N sparsh_next
+#PBS -q gpu
+#PBS -l select=1:ncpus=8:ngpus=1:mem=120gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+# Copy the queue and resource lines from your working v0.1.0 job if they differ.
+#
+# Submit from the sparsh-next folder:
+#   qsub -v RECIPE=default jobs/train.pbs
+# RECIPE is one of: default, legacy, scaled, mask_sim, schedule (docs/EXPERIMENTS.md).
+# Optional: RUN_NAME=... (folder name; defaults to the recipe name).
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source jobs/settings.sh
+source jobs/common.sh
+
+RECIPE="${RECIPE:-default}"
+case "$RECIPE" in
+  default)  RECIPE_ARGS="" ;;
+  legacy)   RECIPE_ARGS="--imbalance legacy_upsample --train_sim mask --val_sim mask --coverage_mode schedule" ;;
+  scaled)   RECIPE_ARGS="--input_encoding scaled" ;;
+  mask_sim) RECIPE_ARGS="--train_sim mask --val_sim reads" ;;
+  schedule) RECIPE_ARGS="--coverage_mode schedule" ;;
+  *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
+esac
+RUN_NAME="${RUN_NAME:-$RECIPE}"
+
+python scripts/train.py \
+  --data_path "$DATA_PATH" \
+  --output_dir "$RUNS_DIR/$RUN_NAME" \
+  ${EXCLUDE_IDS:+--exclude_ids "$EXCLUDE_IDS"} \
+  ${GROUPS_FILE:+--groups_file "$GROUPS_FILE"} \
+  --exclude_prefixes $EXCLUDE_PREFIXES \
+  $RECIPE_ARGS
+
+echo "Finished $(date)"
