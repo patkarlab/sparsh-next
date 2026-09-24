@@ -10,6 +10,21 @@ below 1.0.0 may introduce breaking changes in any minor release.
 
 Development line in a separate repository. Changes are listed against v0.1.0.
 
+### Added in the fourth round (24 September 2026)
+
+- Dilution by normal marrow (`models/dilution.py`; `--dilution_prob`, `--blast_min`, `--normal_class`,
+  `--val_dilution`, `--eval_blasts`): leukaemia array profiles are mixed with a normal-marrow array before
+  the reads are simulated; normal marrows are never mixed. Training dilutes a share of samples to a random
+  blast fraction with normals of the fit set, the inner validation sets likewise (once per sample, normals of
+  the inner split), and the outer folds are scored at fixed blast fractions (conditions such as
+  `binary-blast30_0.30`) with normals of the same outer fold, which the network has not seen. With
+  dilution off, training and scoring are unchanged bit for bit. Recipes `scaled_wide_dil_base`,
+  `scaled_wide_dil`.
+- `scripts/platform_check.py` and `jobs/platform_check.pbs`: mean nanopore call against array beta per CpG, on
+  CpGs whose array means hardly depend on class; mapping table and discordant CpGs (label-free).
+- Evaluation conditions are named tuples (`training.trainer.Condition`); `evaluation.conditions.parse_condition`
+  returns simulation, call error, blast fraction and coverage.
+
 ### Added in the third round (24 September 2026)
 
 - Per-read call errors (`--call_error_max`, `--val_call_error`, `--eval_call_errors`): each read call is

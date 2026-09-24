@@ -86,7 +86,7 @@ The blinded nanopore scoring of 24 September 2026 (summary only: 207 samples wit
 | `scaled_wide_aml_other_err` | The same classes, plus per-read call errors drawn per training sample from 0–20%, with inner validation (early stopping, temperature) at 10% | Does training on noisy reads help on noisy reads? (against `scaled_wide_aml_other`) |
 | `scaled_wide_err` | Call errors as above, with the class set of the job's settings | The same question for another class set; its baseline is `scaled_wide` with `EXTRA_ARGS="--eval_call_errors 0 0.1"`, and both runs take the same class options (for the dropped scheme, add `--exclude_classes AML-MR AML_MECOM-r` to both) |
 
-`bash jobs/submit_experiments.sh scaled_wide_aml_other scaled_wide_aml_other_err` runs the first pair. The comparison that decides is between runs with the same classes, on the `-err10` rows expected on the cohort's coverage mix (`compare_runs.py --ont_coverage`). Differences of 1–2 points are within single-run noise; run seeds 42, 43 and 44 of the recipes that decide.
+`bash jobs/submit_experiments.sh scaled_wide_aml_other scaled_wide_aml_other_err` runs the first pair. The comparison is between runs with the same classes, expected on the cohort's coverage mix (`compare_runs.py --ont_coverage`). The call-error check found no measurable per-read error in the lab's nanopore files (below), so the rows without call errors (`binary_*`) decide and the `-err10` rows are a robustness check. Differences of 1–2 points are within single-run noise; run seeds 42, 43 and 44 of the recipes that decide.
 
 **3. Dropping or grouping.** The two class sets cannot be compared on balanced accuracy, because the class lists differ. Compare instead:
 - what the dropped-class model does with the classes it never saw: `qsub -v RUN_NAME=scaled_wide_no_mr_mecom jobs/score_excluded.pbs` gives the share of AML-MR and AML_MECOM-r arrays called at 0.90 or more as some other class (every such call is wrong), and where they go;
@@ -102,6 +102,30 @@ python scripts/hierarchy_report.py ~/sparsh_next_runs/{scaled_wide_no_mr_mecom,s
 ```
 
 It prints, per condition, the share called at subtype level, the share called at any level and the accuracy of those calls, and writes per-class outcomes and the most confused class pairs to `<run>/hierarchy_report/`. The families in `configs/class_hierarchy.json` are a starting proposal (HOX-related AML; T-ALL other than TAL1). Revise them from biology and from the confused pairs in cross-validation, never from nanopore results, and fix the file before a locked nanopore set is scored. A family is only worth having if its members are confused with each other and the family call means something clinically.
+
+**Results of 24 September 2026.** Call error (job 45102, 254 samples): at the 5,707 CpGs unmethylated in 99% of training arrays, the nanopore calls were methylated 0.1% of the time against a mean array beta of 2.5%; at the 33 methylated ones, 100.0% against 97.8%. The matched per-read error is below zero (about -2%): the nanopore calls are more extreme than the array values, so reads simulated from arrays are, if anything, noisier than real reads. Excluded classes (job 45103, `scaled_wide_no_mr_mecom`): AML-MR arrays were called at 0.90 or more as another class in 0% at 10–30% coverage and 4% at 50–70%; AML_MECOM-r arrays in 4% and 8%. Most of the rest were reported as "AML, subtype undetermined".
+
+## Fourth round: dilution by normal marrow; platform check
+
+Per-read call errors do not explain why real samples behave like simulated data at much lower coverage. All the lab's nanopore samples are bone marrow with more than 20% blasts, while the training arrays come mostly from high-blast diagnostic samples. A subtype's methylation signal scales with the blast fraction, so a sample at 30% blasts, against arrays at about 80%, carries roughly (0.3/0.8)^2, about 1/7, of the information per covered CpG: the same as going from 38% to about 5% coverage. `models/dilution.py` mixes leukaemia array profiles with normal-marrow arrays before the reads are simulated. Scored samples are diluted with normal marrows of their own outer fold, which the network has not seen, as a patient's own normal cells would be.
+
+**1. Platform check (label-free).** `qsub -v RUN_NAME=scaled_wide,ONT_DIR=/path/to/ont_folder jobs/platform_check.pbs` compares, CpG by CpG, the mean nanopore call with the array beta, on CpGs whose mean beta is nearly the same in every class, normal marrow included (so neither case mix nor blast percentage can explain a difference). The mapping table shows whether the two scales agree; `discordant.csv` lists CpGs where they differ by more than 0.3.
+
+**2. Runs.** With the class options you have settled on (here the dropped scheme):
+
+```bash
+qsub -q h200 -v RECIPE=scaled_wide_dil_base,RUN_NAME=dil_base,EXTRA_ARGS="--exclude_classes AML-MR AML_MECOM-r" jobs/train.pbs
+qsub -q h100 -v RECIPE=scaled_wide_dil,RUN_NAME=dil,EXTRA_ARGS="--exclude_classes AML-MR AML_MECOM-r" jobs/train.pbs
+```
+
+| Recipe | Differs from `scaled_wide` by | Question it answers |
+| --- | --- | --- |
+| `scaled_wide_dil_base` | Scored on binary reads only, undiluted and with every leukaemia sample of the outer fold diluted to 50% and 30% blasts (`binary-blast50_*`, `binary-blast30_*`) | Baseline: how much does dilution cost the current model? |
+| `scaled_wide_dil` | The same scoring; half the leukaemia training samples diluted to 20–100% blasts, and the inner validation sets likewise | Does training on diluted profiles recover it, and at what cost to undiluted samples and to normal marrow? |
+
+Normal marrows are never diluted, so a model trained on diluted leukaemias may call more normal marrows leukaemia: check `Normal_Control_BM` in `cv_recall_by_class.csv`. On synthetic data the gain at 30–50% blasts was large and the cost to the stand-in partner class was clear, so this row matters.
+
+**3. Suggested rule, to fix before looking** (binary rows expected on the cohort's coverage mix): adopt dilution if balanced accuracy improves by at least 2 points at both 50% and 30% blasts, falls by no more than 1 point undiluted, and Normal_Control_BM recall at `binary_0.30` falls by no more than 5 points. Weigh the 50% and 30% rows by the blast percentages of your nanopore cohort, which you hold.
 
 ## Scoring on real nanopore samples
 

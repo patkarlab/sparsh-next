@@ -1,6 +1,7 @@
 #!/bin/bash
-# Checks for the third-round additions (per-read call errors, AML_other grouping, reported-call fallback,
-# excluded-class check, call-error estimate) on synthetic data: CPU only, about 30 seconds, writes only to a
+# Checks for the third- and fourth-round additions (per-read call errors, AML_other grouping, reported-call
+# fallback, excluded-class check, call-error estimate, dilution by normal marrow, platform check) on synthetic
+# data: CPU only, about a minute, writes only to a
 # temporary folder that is deleted afterwards. Run from the sparsh-next folder, after tests/smoke_test.sh:
 #   bash tests/smoke_test_round3.sh
 set -uo pipefail
@@ -140,4 +141,77 @@ s = json.load(open(f"{tmp}/pred_err/summary_metrics.json"))
 assert s["reported_call"]["all_with_truth"]["n"] == 8, s["reported_call"]
 print("third-round contents ok")
 PY
-echo "ROUND 3 CHECKS PASSED"
+# Fourth round: dilution by normal marrow and the platform check. The synthetic data have no normal-marrow
+# class, so T-ALL stands in as the dilution partner.
+step train_dil    python scripts/train.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/run_dil" \
+                      --exclude_prefixes MPAL --n_folds 2 --epochs 3 --hidden_dims 32 16 --device cpu \
+                      --train_sim binary --val_sim binary --eval_sims binary --cov_max 0.95 \
+                      --coverage_dist uniform --input_encoding scaled --val_coverages 0.1 0.5 0.9 \
+                      --eval_coverages 0.1 0.5 0.9 --dilution_prob 0.5 --blast_min 0.2 --val_dilution \
+                      --eval_blasts 1 0.5 --normal_class T-ALL --final_model
+step dil_refused  bash -c "python scripts/train.py --data_path '$TMP/data/train.pkl' --output_dir '$TMP/run_refused' \
+                      --exclude_prefixes MPAL --n_folds 2 --epochs 1 --hidden_dims 8 --device cpu \
+                      --eval_blasts 0.5 --normal_class NO_SUCH_CLASS 2>&1 | grep -q 'which this training set lacks'"
+step compare_dil  python scripts/compare_runs.py "$TMP/run_wide" "$TMP/run_dil" \
+                      --ont_coverage "$TMP/ont_coverage.csv" --output "$TMP/comparison_dil.csv"
+step hierarchy_dil python scripts/hierarchy_report.py "$TMP/run_dil" --hierarchy none
+step platform     python scripts/platform_check.py "$TMP/data/ont" --run "$TMP/run_dil" --output_dir "$TMP/platform" \
+                      --min_ont_samples 3
+step dilution_unit python - <<'PY'
+import numpy as np
+import torch
+from models.dilution import dilute_batch, dilute_fixed, dilute_random, mix, pick_partner
+x = np.array([[0.0, 1.0, 0.5, np.nan], [1.0, 1.0, 1.0, 1.0]], dtype=np.float32)
+partners = np.array([[1.0, 0.0, np.nan, 0.2]], dtype=np.float32)
+out = dilute_fixed(x, ["a", "b"], np.array([False, True]), partners, ["n1"], 0.3, 1)
+assert np.allclose(out[0, :3], [0.7, 0.3, 0.5]) and np.isnan(out[0, 3]), out   # missing partner keeps x
+assert np.array_equal(out[1], x[1]), "normal marrows must not be diluted"
+assert np.array_equal(dilute_fixed(x, ["a", "b"], np.array([False, True]), partners, ["n1"], 0.3, 1), out,
+                      equal_nan=True)
+assert dilute_fixed(x, ["a", "b"], np.array([False, False]), partners, ["n1"], 1.0, 1) is x
+# the partner depends only on the sample and on which normal marrows are in the pool
+ids = [f"N{i}" for i in range(30)]
+full = [pick_partner(f"S{k}", ids, "eval0.3", 12345) for k in range(50)]
+half = ids[::2]
+for k, j in enumerate(full):
+    if ids[j] in half:
+        assert half[pick_partner(f"S{k}", half, "eval0.3", 12345)] == ids[j]
+v = dilute_random(np.ones((200, 5), np.float32), [str(i) for i in range(200)], np.zeros(200, bool),
+                  np.zeros((3, 5), np.float32), ["n1", "n2", "n3"], 0.5, 0.2, 7)
+diluted = v[:, 0] < 1.0
+assert 0.35 < diluted.mean() < 0.65 and (v[diluted, 0] >= 0.2 - 1e-6).all(), diluted.mean()
+state = torch.get_rng_state()
+xb = torch.ones(4, 5)
+assert dilute_batch(xb, torch.zeros(4, dtype=torch.long), torch.zeros(3, 5), torch.arange(3), 1, 0.0, 0.2) is xb
+assert torch.equal(state, torch.get_rng_state()), "dilution switched off must not draw random numbers"
+yb = torch.tensor([0, 0, 1, 1])
+xs = torch.ones(4, 5)
+torch.manual_seed(0)
+o = dilute_batch(xs, yb, torch.zeros(3, 5), torch.arange(3), 1, 1.0, 0.2)
+assert torch.equal(o[2:], xs[2:]) and (o[:2] < 1).all() and (o[:2] >= 0.2 - 1e-6).all(), o
+assert np.isclose(float(mix(torch.tensor(1.0), torch.tensor(0.0), 0.25)), 0.25)
+print("dilution ok")
+PY
+step contents_dil python - "$TMP" <<'PY'
+import json
+import os
+import sys
+import pandas as pd
+tmp = sys.argv[1]
+m = pd.read_csv(f"{tmp}/run_dil/cv_metrics_by_condition.csv")
+want = {"dense"} | {f"binary{b}_{c}" for b in ("", "-blast50") for c in ("0.10", "0.50", "0.90")}
+assert set(m["condition"]) == want, set(m["condition"]) ^ want
+assert set(m.loc[m["condition"] == "binary-blast50_0.50", "blast"]) == {0.5}
+t = json.load(open(f"{tmp}/run_dil/config.json"))["training"]
+assert t["dilution_prob"] == 0.5 and t["val_dilution"] and t["eval_blasts"] == [1.0, 0.5], t
+assert os.path.exists(f"{tmp}/run_dil/model.pt")
+c = pd.read_csv(f"{tmp}/comparison_dil.csv", index_col=0)
+for row in ("your ONT samples, binary-blast50_*", "binary-blast50_0.50", "binary_0.50"):
+    assert row in c.index, f"row {row} missing from the comparison"
+for f in ("mapping.csv", "discordant.csv", "per_cpg.csv"):
+    assert os.path.exists(f"{tmp}/platform/{f}"), f
+pc = pd.read_csv(f"{tmp}/platform/per_cpg.csv")
+assert len(pc) == 3000 and pc["ont_samples"].max() <= 8
+print("fourth-round contents ok")
+PY
+echo "ROUND 3 AND 4 CHECKS PASSED"

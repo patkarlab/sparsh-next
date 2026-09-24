@@ -28,7 +28,7 @@ import time
 import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -41,6 +41,7 @@ from data.dataset import legacy_masked_upsample
 from evaluation.conditions import condition_name
 from models.corruption import (READ_SIMS, corrupt_rows, corrupt_torch, sample_call_error,
                                sample_observed_fraction)
+from models.dilution import dilute_batch, dilute_fixed, dilute_random, partner_pool
 from models.sparse_nn import SparseNN, predict_logits
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,17 @@ class TrainConfig:
     call_error_max: float = 0.0
     val_call_error: float = 0.0
     eval_call_errors: Tuple[float, ...] = (0.0,)
+    # dilution by normal marrow (models/dilution.py): training dilutes each leukaemia sample with
+    # probability dilution_prob to a blast fraction from [blast_min, 1]; val_dilution does the same, once
+    # per sample, for the inner validation sets; the outer folds are scored at every blast fraction in
+    # eval_blasts (1 = undiluted, the conditions earlier runs used). Partners: normal_class arrays of the fit
+    # set (training), of the inner-validation split (validation) and of the outer fold (scoring), so scored
+    # inputs are diluted with normal marrows the network has not seen (models/dilution.py).
+    dilution_prob: float = 0.0
+    blast_min: float = 0.2
+    normal_class: str = "Normal_Control_BM"
+    val_dilution: bool = False
+    eval_blasts: Tuple[float, ...] = (1.0,)
     # validation and evaluation
     n_folds: int = 5
     inner_val_frac: float = 0.15
@@ -271,8 +283,16 @@ def clip_observed(X: np.ndarray, clip: Optional[Sequence[float]]) -> np.ndarray:
     return np.where(np.isnan(X), X, np.clip(X, clip[0], clip[1])).astype(np.float32)
 
 
-def make_inner_sets(X: np.ndarray, sample_ids: np.ndarray, cfg: "TrainConfig") -> List[np.ndarray]:
-    """Fixed corrupted copies of the inner validation samples, one per validation coverage."""
+def make_inner_sets(X: np.ndarray, sample_ids: np.ndarray, cfg: "TrainConfig", y: Optional[np.ndarray] = None,
+                    partners: Optional[np.ndarray] = None, partner_ids=None,
+                    normal_idx: Optional[int] = None) -> List[np.ndarray]:
+    """
+    Fixed corrupted copies of the inner validation samples, one per validation coverage. With
+    val_dilution, leukaemia samples are first diluted with normal marrow (partners), once per sample.
+    """
+    if cfg.val_dilution and cfg.dilution_prob > 0:
+        X = dilute_random(X, sample_ids, y == normal_idx, partners, partner_ids, cfg.dilution_prob,
+                          cfg.blast_min, cfg.seed)
     sets = []
     for c in cfg.val_coverages:
         err = cfg.val_call_error if cfg.val_sim in READ_SIMS else 0.0
@@ -302,6 +322,7 @@ def train_one_model(
     seed: int,
     tag: str,
     history: Optional[List[Dict]] = None,
+    normal_idx: Optional[int] = None,
 ) -> Dict:
     """
     Train one network on X_fit. Model selection uses only the inner validation
@@ -321,6 +342,11 @@ def train_one_model(
     store = _storage_device(X_fit.nbytes, device, cfg.data_on_gpu)
     X_store = torch.from_numpy(np.ascontiguousarray(X_fit, dtype=np.float32)).to(store)
     y_store = torch.from_numpy(y_fit.astype(np.int64)).to(store)
+    normal_rows = None
+    if cfg.dilution_prob > 0:
+        normal_rows = torch.from_numpy(np.flatnonzero(y_fit == normal_idx)).to(store)
+        if normal_idx is None or normal_rows.numel() == 0:
+            raise RuntimeError(f"[{tag}] dilution needs {cfg.normal_class} arrays in the training part")
 
     model = SparseNN(**model_config).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
@@ -338,6 +364,8 @@ def train_one_model(
             idx = torch.as_tensor(batch, device=store)
             xb = X_store.index_select(0, idx).to(device, non_blocking=True)
             yb = y_store.index_select(0, idx).to(device, non_blocking=True)
+            if normal_rows is not None:
+                xb = dilute_batch(xb, yb, X_store, normal_rows, normal_idx, cfg.dilution_prob, cfg.blast_min)
             frac = sample_observed_fraction(
                 len(batch), cfg.coverage_mode, epoch, cfg.epochs,
                 cfg.cov_min, cfg.cov_max, cfg.mask_start, cfg.mask_end, device, cfg.coverage_dist,
@@ -406,22 +434,34 @@ def train_one_model(
 # Evaluation conditions and nested cross-validation
 # =============================================================================
 
+class Condition(NamedTuple):
+    name: str
+    sim: Optional[str]
+    fraction: Optional[float]
+    call_error: float = 0.0
+    blast: float = 1.0
+
+
 def evaluation_conditions(eval_coverages: Sequence[float], eval_sims: Sequence[str] = ("reads", "mask"),
-                          eval_call_errors: Sequence[float] = (0.0,)
-                          ) -> List[Tuple[str, Optional[str], Optional[float], float]]:
+                          eval_call_errors: Sequence[float] = (0.0,), eval_blasts: Sequence[float] = (1.0,)
+                          ) -> List[Condition]:
     """
-    (name, simulation, observed fraction, call error); 'dense' means the array profile as measured.
-    Call errors apply to the read simulations only; mask conditions are scored once, without them.
+    Conditions (name, simulation, observed fraction, call error, blast fraction); 'dense' means the
+    array profile as measured. Call errors and dilution apply to the read simulations only; mask
+    conditions are scored once, without them.
     """
-    conds = [("dense", None, None, 0.0)]
+    conds = [Condition("dense", None, None)]
     for sim in eval_sims:
         errors = [float(e) for e in eval_call_errors] if sim in READ_SIMS else [0.0]
-        for err in dict.fromkeys(errors):
-            for c in eval_coverages:
-                conds.append((condition_name(sim, c, err), sim, float(c), err))
-    names = [c[0] for c in conds]
+        blasts = [float(b) for b in eval_blasts] if sim in READ_SIMS else [1.0]
+        for blast in dict.fromkeys(blasts):
+            for err in dict.fromkeys(errors):
+                for c in eval_coverages:
+                    conds.append(Condition(condition_name(sim, c, err, blast), sim, float(c), err, blast))
+    names = [c.name for c in conds]
     if len(set(names)) != len(names):
-        raise ValueError(f"--eval_coverages or --eval_call_errors give duplicate condition names: {names}")
+        raise ValueError("--eval_coverages, --eval_call_errors or --eval_blasts give duplicate condition names: "
+                         f"{names}")
     return conds
 
 
@@ -435,13 +475,14 @@ def cross_validate(
     cfg: TrainConfig,
     fold_model_dir: Optional[Path] = None,
     history: Optional[List[Dict]] = None,
+    normal_idx: Optional[int] = None,
 ) -> Dict:
     """Nested CV. Returns out-of-fold logits per evaluation condition and per-fold records."""
     device = resolve_device(cfg.device)
-    conditions = evaluation_conditions(cfg.eval_coverages, cfg.eval_sims, cfg.eval_call_errors)
+    conditions = evaluation_conditions(cfg.eval_coverages, cfg.eval_sims, cfg.eval_call_errors, cfg.eval_blasts)
     folds = split_indices(y, groups, cfg.n_folds, cfg.seed)
     n = len(y)
-    logits = {name: np.full((n, n_classes), np.nan, dtype=np.float32) for name, _, _, _ in conditions}
+    logits = {c.name: np.full((n, n_classes), np.nan, dtype=np.float32) for c in conditions}
     fold_of = np.full(n, -1, dtype=np.int64)
     temperature_of = np.full(n, np.nan, dtype=np.float64)
     records = []
@@ -456,18 +497,44 @@ def cross_validate(
         if missing:
             logger.warning(f"  classes in the outer fold but absent from training: {missing}")
 
-        inner_sets = make_inner_sets(X[ival_idx], sample_ids[ival_idx], cfg)
+        blasts = [c.blast for c in conditions if c.blast < 1.0]
+        if (blasts or cfg.dilution_prob > 0) and not (y[tr] == normal_idx).any():
+            raise RuntimeError(f"fold {k + 1}: no {cfg.normal_class} arrays in the training part to dilute with")
+        val_partners, val_ids = X[:0], []
+        if cfg.val_dilution and cfg.dilution_prob > 0:
+            val_partners, val_ids = partner_pool(X, y, sample_ids, normal_idx, ival_idx, fit_idx,
+                                                 "inner validation split", logger)
+        inner_sets = make_inner_sets(X[ival_idx], sample_ids[ival_idx], cfg, y[ival_idx], val_partners, val_ids,
+                                     normal_idx)
+        del val_partners
         result = train_one_model(X[fit_idx], y[fit_idx], inner_sets, y[ival_idx], n_classes,
-                                 model_config, cfg, seed=cfg.seed + k, tag=f"fold{k + 1}", history=history)
+                                 model_config, cfg, seed=cfg.seed + k, tag=f"fold{k + 1}", history=history,
+                                 normal_idx=normal_idx)
         del inner_sets
         model = result["model"]
 
-        for name, sim, frac, err in conditions:
-            Xc = corrupt_rows(X[te], sample_ids[te], frac, sim, cfg.eval_seed, salt=2, call_error=err)
-            if sim in READ_SIMS:
-                Xc = clip_observed(Xc, cfg.clip_observed)
-            logits[name][te] = predict_logits(model, Xc, device, cfg.eval_batch_size)
-            del Xc
+        X_te = X[te]
+        if blasts:
+            partners, partner_ids = partner_pool(X, y, sample_ids, normal_idx, te, tr, "outer fold", logger)
+        for blast in dict.fromkeys(c.blast for c in conditions):
+            if blast < 1.0:
+                X_base = dilute_fixed(X_te, sample_ids[te], y[te] == normal_idx, partners, partner_ids, blast,
+                                      cfg.eval_seed)
+            else:
+                X_base = X_te
+            for c in conditions:
+                if c.blast != blast:
+                    continue
+                Xc = corrupt_rows(X_base, sample_ids[te], c.fraction, c.sim, cfg.eval_seed, salt=2,
+                                  call_error=c.call_error)
+                if c.sim in READ_SIMS:
+                    Xc = clip_observed(Xc, cfg.clip_observed)
+                logits[c.name][te] = predict_logits(model, Xc, device, cfg.eval_batch_size)
+                del Xc
+            del X_base
+        del X_te
+        if blasts:
+            del partners
         fold_of[te] = k
         temperature_of[te] = result["temperature"]
 
@@ -497,13 +564,21 @@ def train_final_model(
     model_config: Dict,
     cfg: TrainConfig,
     history: Optional[List[Dict]] = None,
+    normal_idx: Optional[int] = None,
 ) -> Dict:
     """
     Same recipe on all samples except an inner split (about inner_val_frac, 1/7 by
     default) held out for early stopping and temperature calibration.
     """
     fit_rel, ival_rel = inner_split(y, groups, cfg.inner_val_frac, cfg.seed + 999)
-    inner_sets = make_inner_sets(X[ival_rel], sample_ids[ival_rel], cfg)
+    partners, partner_ids = X[:0], []
+    if cfg.val_dilution and cfg.dilution_prob > 0:
+        partners, partner_ids = partner_pool(X, y, sample_ids, normal_idx, ival_rel, fit_rel,
+                                             "inner validation split", logger)
+    inner_sets = make_inner_sets(X[ival_rel], sample_ids[ival_rel], cfg, y[ival_rel], partners, partner_ids,
+                                 normal_idx)
+    del partners
     logger.info(f"Final model: fit {len(fit_rel)}, inner val {len(ival_rel)}")
     return train_one_model(X[fit_rel], y[fit_rel], inner_sets, y[ival_rel], n_classes,
-                           model_config, cfg, seed=cfg.seed + 999, tag="final", history=history)
+                           model_config, cfg, seed=cfg.seed + 999, tag="final", history=history,
+                           normal_idx=normal_idx)

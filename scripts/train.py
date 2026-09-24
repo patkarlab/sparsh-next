@@ -32,6 +32,7 @@ sys.path.insert(0, str(REPO))
 from data.dataset import encode_labels, filter_classes, load_label_map, load_training_data, subset  # noqa: E402
 from evaluation.metrics import confusion_frame, predictions_frame, recall_by_class, summarize_probs  # noqa: E402
 from models.corruption import COVERAGE_DISTS, COVERAGE_MODES, READ_SIMS, SIMULATIONS  # noqa: E402
+from models.dilution import normal_index  # noqa: E402
 from models.sparse_nn import ENCODINGS, softmax_np  # noqa: E402
 from training.reproducibility import generate_run_id, get_environment_metadata, set_deterministic_mode  # noqa: E402
 from training.trainer import (IMBALANCE_MODES, TrainConfig, cross_validate,  # noqa: E402
@@ -89,6 +90,13 @@ def parse_args():
     s.add_argument("--call_error_max", type=float, default=0.0,
                    help="Per-read call error rate drawn per training sample, uniform on [0, this]; 0 = none. "
                         "Read simulations only (see models/corruption.py)")
+    s.add_argument("--dilution_prob", type=float, default=0.0,
+                   help="Share of leukaemia training samples diluted with a normal-marrow array before the reads "
+                        "are simulated (see models/dilution.py); 0 = none")
+    s.add_argument("--blast_min", type=float, default=0.2,
+                   help="Diluted samples get a blast fraction drawn uniformly from [this, 1]")
+    s.add_argument("--normal_class", default="Normal_Control_BM",
+                   help="Class whose arrays are the dilution partners (never diluted themselves)")
 
     v = p.add_argument_group("validation and evaluation")
     v.add_argument("--n_folds", type=int, default=5)
@@ -100,6 +108,12 @@ def parse_args():
                    help="Simulations scored on the outer folds, each at every --eval_coverages")
     v.add_argument("--val_call_error", type=float, default=0.0,
                    help="Per-read call error rate of the inner validation sets (early stopping, temperature)")
+    v.add_argument("--val_dilution", action="store_true",
+                   help="Dilute the inner validation sets as training does (once per sample, seeded)")
+    v.add_argument("--eval_blasts", type=float, nargs="+", default=[1.0],
+                   help="Blast fractions at which the read simulations are scored; 1 gives the condition names "
+                        "and inputs of earlier runs, 0.3 adds rows such as binary-blast30_0.30 (every leukaemia "
+                        "sample of the outer fold diluted to 30%% blasts with a normal marrow from the training part)")
     v.add_argument("--eval_call_errors", type=float, nargs="+", default=[0.0],
                    help="Per-read call error rates at which the read simulations are scored; 0 gives the "
                         "condition names and inputs of earlier runs, e.g. binary_0.30; 0.1 adds binary-err10_0.30")
@@ -150,16 +164,25 @@ def main():
         if not 0.0 <= err < 0.5:
             sys.exit(f"Call error rates must be between 0 and 0.5 (got {err}); 0.5 would make every read random")
     val_sim = args.val_sim or args.train_sim
+    if not 0.0 <= args.dilution_prob <= 1.0:
+        sys.exit(f"--dilution_prob must be between 0 and 1 (got {args.dilution_prob})")
+    if not 0.0 < args.blast_min <= 1.0:
+        sys.exit(f"--blast_min must be above 0 and at most 1 (got {args.blast_min})")
+    for blast in args.eval_blasts:
+        if not 0.0 < blast <= 1.0:
+            sys.exit(f"--eval_blasts must be above 0 and at most 1 (got {blast})")
+    if args.val_dilution and args.dilution_prob <= 0:
+        sys.exit("--val_dilution needs --dilution_prob above 0")
     if args.call_error_max > 0 and args.train_sim not in READ_SIMS:
         sys.exit(f"--call_error_max needs a read simulation for --train_sim {READ_SIMS}, not {args.train_sim}")
     if args.val_call_error > 0 and val_sim not in READ_SIMS:
         sys.exit(f"--val_call_error needs a read simulation for --val_sim {READ_SIMS}, not {val_sim}")
-    conditions = evaluation_conditions(args.eval_coverages, args.eval_sims, args.eval_call_errors)
-    condition_names = [c[0] for c in conditions]
+    conditions = evaluation_conditions(args.eval_coverages, args.eval_sims, args.eval_call_errors, args.eval_blasts)
+    condition_names = [c.name for c in conditions]
     if args.primary_condition == "auto":
-        sim_rows = [c for c in conditions if c[1] == args.eval_sims[0] and c[3] == 0.0]
-        sim_rows = sim_rows or [c for c in conditions if c[1] == args.eval_sims[0]]
-        args.primary_condition = min(sim_rows, key=lambda c: abs(c[2] - 0.2))[0] if sim_rows else "dense"
+        sim_rows = [c for c in conditions if c.sim == args.eval_sims[0] and c.call_error == 0.0 and c.blast == 1.0]
+        sim_rows = sim_rows or [c for c in conditions if c.sim == args.eval_sims[0]]
+        args.primary_condition = min(sim_rows, key=lambda c: abs(c.fraction - 0.2)).name if sim_rows else "dense"
     if args.primary_condition not in condition_names:
         sys.exit(f"--primary_condition {args.primary_condition} is not one of {condition_names}")
 
@@ -173,6 +196,10 @@ def main():
     y, idx_to_class = encode_labels(bundle["labels"])
     X, sample_ids, groups = bundle["X"], bundle["sample_ids"], bundle["groups"]
     n_classes = len(idx_to_class)
+    normal_idx = normal_index(idx_to_class, args.normal_class)
+    needs_normals = args.dilution_prob > 0 or any(b < 1.0 for b in args.eval_blasts)
+    if needs_normals and normal_idx is None:
+        sys.exit(f"Dilution needs the class {args.normal_class!r} (--normal_class), which this training set lacks")
     counts = np.bincount(y, minlength=n_classes)
     logger.info(f"Training set: {len(y)} samples, {X.shape[1]} CpGs, {n_classes} classes")
     for i in range(n_classes):
@@ -204,6 +231,8 @@ def main():
         mask_start=args.mask_start, mask_end=args.mask_end,
         call_error_max=args.call_error_max, val_call_error=args.val_call_error,
         eval_call_errors=tuple(dict.fromkeys(float(e) for e in args.eval_call_errors)), n_folds=args.n_folds,
+        dilution_prob=args.dilution_prob, blast_min=args.blast_min, normal_class=args.normal_class,
+        val_dilution=args.val_dilution, eval_blasts=tuple(dict.fromkeys(float(b) for b in args.eval_blasts)),
         inner_val_frac=args.inner_val_frac, val_sim=val_sim,
         val_coverages=tuple(args.val_coverages), eval_coverages=tuple(args.eval_coverages),
         eval_sims=tuple(args.eval_sims),
@@ -227,7 +256,7 @@ def main():
     # ---------------------------------------------------------------- nested CV
     history = []
     fold_dir = None if args.no_fold_models else out / "fold_models"
-    cv = cross_validate(X, y, sample_ids, groups, n_classes, model_config, cfg, fold_dir, history)
+    cv = cross_validate(X, y, sample_ids, groups, n_classes, model_config, cfg, fold_dir, history, normal_idx)
     save_history(history, out)
     pd.DataFrame(cv["records"]).to_csv(out / "folds_summary.csv", index=False)
     pd.DataFrame({
@@ -237,12 +266,12 @@ def main():
 
     rows_cal, rows_raw, recalls = [], [], {}
     true_names = [idx_to_class[i] for i in y]
-    for name, sim, frac, err in cv["conditions"]:
+    for name, sim, frac, err, blast in cv["conditions"]:
         logits = cv["logits"][name]
         probs_raw = softmax_np(logits)
         probs = softmax_np(logits / cv["temperature_of"][:, None])  # each sample uses its own fold's temperature
         base = {"condition": name, "simulation": sim or "none", "observed_fraction": frac if frac else 1.0,
-                "call_error": err}
+                "call_error": err, "blast": blast}
         rows_cal.append({**base, **summarize_probs(y, probs, args.threshold)})
         rows_raw.append({**base, **summarize_probs(y, probs_raw, args.threshold)})
         recalls[name] = recall_by_class(y, probs, n_classes)
@@ -264,7 +293,7 @@ def main():
     # ---------------------------------------------------------------- final model (optional)
     final_info = None
     if args.final_model:
-        result = train_final_model(X, y, sample_ids, groups, n_classes, model_config, cfg, history)
+        result = train_final_model(X, y, sample_ids, groups, n_classes, model_config, cfg, history, normal_idx)
         torch.save(result["model"].state_dict(), out / "model.pt")
         final_info = {k: result[k] for k in ("best_epoch", "epochs_run", "best_inner_val_nll", "temperature")}
         save_history(history, out)

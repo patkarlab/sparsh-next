@@ -99,9 +99,10 @@ def pick_detail(conditions, wanted: str) -> str:
         if wanted not in conditions:
             sys.exit(f"--detail_condition {wanted} is not one of {conditions}")
         return wanted
-    binary = [c for c in conditions if parse_condition(c)[0] == "binary" and parse_condition(c)[1] == 0.0]
-    pool = binary or conditions
-    return min(pool, key=lambda c: abs(parse_condition(c)[2] - 0.05))
+    plain = [c for c in conditions if parse_condition(c).call_error == 0.0 and parse_condition(c).blast == 1.0]
+    binary = [c for c in plain if parse_condition(c).sim == "binary"]
+    pool = binary or plain or conditions
+    return min(pool, key=lambda c: abs(parse_condition(c).fraction - 0.05))
 
 
 def main():

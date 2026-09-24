@@ -10,7 +10,9 @@ nanopore conditions, named <simulation>_<f>, where a fraction f of the model's
 CpGs is covered: reads_* (the methylated fraction of the reads at each CpG),
 binary_* (one 0/1 call per CpG from its reads) and oneread_* (the call of a
 single read). Runs scored with per-read call errors (--eval_call_errors) add
-rows such as binary-err10_* (10% of read calls wrong). --all_conditions adds the dense array profile and the mask_*
+rows such as binary-err10_* (10% of read calls wrong), and runs scored with
+dilution (--eval_blasts) rows such as binary-blast30_* (leukaemia samples at 30%
+blasts). --all_conditions adds the dense array profile and the mask_*
 conditions (array beta values at the covered CpGs), which no nanopore run
 produces. For each simulation (and call error), a row gives the mean over its coverages, and
 with --ont_coverage (the CSV written by scripts/ont_coverage.py) a second row
@@ -116,13 +118,15 @@ def main():
         settings.append({"run": name, "imbalance": t["imbalance"], "encoding": m["input_encoding"],
                          "train_sim": t["train_sim"], "trained_coverage": trained_coverage(t),
                          "call_error": f"0-{t['call_error_max']:g}" if t.get("call_error_max") else "0",
+                         "dilution": (f"{t['dilution_prob']:g} at {100 * t['blast_min']:g}-100% blasts"
+                                      if t.get("dilution_prob") else "none"),
                          "calibrated": t["calibrate"], "n_samples": d["n_samples"], "n_classes": m["n_classes"],
                          "median_best_epoch": pd.Series([r["best_epoch"] for r in cfg["cv_folds"]]).median()})
         data_keys.add((d["data_path"], d["n_samples"], d["n_cpgs"], d.get("cpg_list"),
                        json.dumps(d.get("class_counts"), sort_keys=True), d.get("groups_file"), d.get("group_col")))
         eval_keys.add(t["eval_seed"])
         eval_grids.add((tuple(t.get("eval_sims", ["reads", "mask"])), tuple(t["eval_coverages"]),
-                        tuple(t.get("eval_call_errors", [0.0]))))
+                        tuple(t.get("eval_call_errors", [0.0])), tuple(t.get("eval_blasts", [1.0]))))
         splits.add((t["seed"], t["n_folds"]))
 
     print(pd.DataFrame(settings).to_string(index=False))
@@ -131,10 +135,11 @@ def main():
               "they are not directly comparable.")
     elif len(splits) > 1:
         print("\nNote: runs use different fold splits (seed, fold count or grouping). Samples and evaluation "
-              "inputs are identical, so differences include run-to-run noise; this is how to measure that noise.")
+              "inputs are identical, except in diluted rows (-blast*), whose normal-marrow partners come from each "
+              "outer fold; differences include run-to-run noise, and this is how to measure that noise.")
     if len(eval_grids) > 1:
-        print("\nNote: runs were scored on different simulations, coverages or call errors; a blank cell means "
-              "that run was not scored on that row.")
+        print("\nNote: runs were scored on different simulations, coverages, call errors or blast fractions; "
+              "a blank cell means that run was not scored on that row.")
     if not args.all_conditions:
         print("\nSimulated nanopore conditions only; --all_conditions adds dense and mask_*.")
     if ont_cov is not None:

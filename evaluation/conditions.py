@@ -2,15 +2,19 @@
 SPARSH-next: names of the evaluation conditions and the summary rows built on them.
 
 A condition is one way of presenting the outer-fold samples to a model:
-  dense                  the array profile as measured
-  <sim>_<f>              simulation <sim> at observed fraction f, e.g. binary_0.30
-  <sim>-err<pct>_<f>     the same with a per-read call error of <pct> percent,
-                         e.g. binary-err10_0.30 (see models/corruption.py)
-Names without an error part are the ones earlier runs used, so tables of old
-and new runs line up.
+  dense                         the array profile as measured
+  <sim>_<f>                     simulation <sim> at observed fraction f, e.g. binary_0.30
+  <sim>-err<pct>_<f>            the same with a per-read call error of <pct> percent,
+                                e.g. binary-err10_0.30 (see models/corruption.py)
+  <sim>-blast<pct>_<f>          leukaemia samples diluted with normal marrow to <pct>
+                                percent blasts before the reads are simulated, e.g.
+                                binary-blast30_0.30 (see models/dilution.py)
+  <sim>-err<pct>-blast<pct>_<f> both
+Names without these parts are the ones earlier runs used, so tables of old and
+new runs line up.
 """
 
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,8 +22,23 @@ import pandas as pd
 from models.corruption import READ_SIMS
 
 
-def condition_name(sim: str, fraction: float, call_error: float = 0.0) -> str:
-    label = sim if not call_error else f"{sim}-err{round(100.0 * float(call_error), 4):g}"
+class ConditionParts(NamedTuple):
+    sim: str
+    call_error: float
+    blast: float
+    fraction: Optional[float]
+
+
+def _pct(value: float) -> str:
+    return f"{round(100.0 * float(value), 4):g}"
+
+
+def condition_name(sim: str, fraction: float, call_error: float = 0.0, blast: float = 1.0) -> str:
+    label = sim
+    if call_error:
+        label += f"-err{_pct(call_error)}"
+    if blast < 1.0:
+        label += f"-blast{_pct(blast)}"
     return f"{label}_{float(fraction):.2f}"
 
 
@@ -32,39 +51,51 @@ def split_condition(name: str) -> Tuple[str, Optional[float]]:
         return str(name), None
 
 
-def parse_label(label: str) -> Tuple[str, float]:
-    """'binary-err10' -> ('binary', 0.10); 'binary' -> ('binary', 0.0)."""
-    sim, sep, err = str(label).partition("-err")
-    if not sep:
-        return sim, 0.0
+def parse_label(label: str) -> Tuple[str, float, float]:
+    """'binary-err10-blast30' -> ('binary', 0.10, 0.30); 'binary' -> ('binary', 0.0, 1.0)."""
+    parts = str(label).split("-")
+    sim, err, blast = parts[0], 0.0, 1.0
+    # simulation names contain no '-'; anything else keeps the whole label as the simulation
     try:
-        return sim, float(err) / 100.0
+        for part in parts[1:]:
+            if part.startswith("err"):
+                err = float(part[3:]) / 100.0
+            elif part.startswith("blast"):
+                blast = float(part[5:]) / 100.0
+            else:
+                return str(label), 0.0, 1.0
     except ValueError:
-        return str(label), 0.0
+        return str(label), 0.0, 1.0
+    return sim, err, blast
 
 
-def parse_condition(name: str) -> Tuple[str, float, Optional[float]]:
-    """(simulation, call error, observed fraction) of a condition name."""
+def parse_condition(name: str) -> ConditionParts:
+    """Simulation, call error, blast fraction and observed fraction of a condition name."""
     label, cov = split_condition(name)
-    sim, err = parse_label(label)
-    return sim, err, cov
+    sim, err, blast = parse_label(label)
+    return ConditionParts(sim, err, blast, cov)
 
 
 def is_nanopore(name: str) -> bool:
-    """True for conditions that simulate nanopore reads (reads, binary, oneread; any call error)."""
-    sim, _, cov = parse_condition(name)
-    return sim in READ_SIMS and cov is not None
+    """True for conditions that simulate nanopore reads (reads, binary, oneread; any call error or dilution)."""
+    p = parse_condition(name)
+    return p.sim in READ_SIMS and p.fraction is not None
 
 
 def nanopore_labels(names) -> list:
-    """Distinct '<sim>' or '<sim>-err<pct>' labels among the nanopore conditions, in a stable order."""
+    """Distinct labels ('binary', 'binary-err10', 'binary-blast30', ...) among the nanopore conditions."""
     labels = {split_condition(n)[0] for n in names if is_nanopore(n)}
-    return sorted(labels, key=lambda lab: (READ_SIMS.index(parse_label(lab)[0]), parse_label(lab)[1]))
+
+    def key(lab):
+        sim, err, blast = parse_label(lab)
+        return READ_SIMS.index(sim), err, -blast
+
+    return sorted(labels, key=key)
 
 
 def add_summary_rows(table: pd.DataFrame, ont_cov, with_mean: bool = True) -> pd.DataFrame:
     """
-    For every nanopore label (simulation and call error), add the mean over its coverages and,
+    For every nanopore label (simulation, call error, dilution), add the mean over its coverages and,
     if ont_cov (observed fractions of real samples) is given, the value expected on those samples:
     each sample's coverage is placed between the two nearest evaluated coverages and the metric
     interpolated there (the nearest end outside the evaluated range). Only coverage is used.
