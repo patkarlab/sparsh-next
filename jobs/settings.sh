@@ -6,7 +6,7 @@
 # Training data, only read. DATA_PATH: full path of the training pickle. EXCLUDE_IDS: full path of its
 # sample exclusion list (one Sample_ID per line), or leave it empty for none.
 : "${DATA_PATH:=/home/patkarlab/AL_Methylation_Classifier/data/AL_24Sep2026.pkl}"
-: "${EXCLUDE_IDS=}"
+: "${EXCLUDE_IDS=/home/patkarlab/sparsh_next_runs/data_checks/exclude_24Sep2026.txt}"
 
 : "${RUNS_DIR:=$HOME/sparsh_next_runs}"      # each run gets its own new folder here (about 8 GB of weights per run)
 : "${CONDA_ENV:=sparsh_next}"                # clone of meth_sim (docs/SETUP.md step 4)
@@ -20,4 +20,4 @@
 # Classes left out: MPAL, AML_NOS and B-ALL_NOS, as in the v0.1.0 job template.
 # train_focal_fast.pbs leaves out only MPAL; to match it, change this to "MPAL".
 : "${EXCLUDE_PREFIXES:=MPAL AML_NOS B-ALL_NOS}"
-: "${GROUPS_FILE:=}"                         # optional: CSV Sample_ID,group (e.g. $RUNS_DIR/data_checks/groups.csv)
+: "${GROUPS_FILE:=/home/patkarlab/sparsh_next_runs/data_checks/groups_no_normals.csv}"                         # optional: CSV Sample_ID,group (e.g. $RUNS_DIR/data_checks/groups.csv)
