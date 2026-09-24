@@ -5,7 +5,7 @@
 
 # Training data, only read. DATA_PATH: full path of the training pickle. EXCLUDE_IDS: full path of its
 # sample exclusion list (one Sample_ID per line), or leave it empty for none.
-: "${DATA_PATH:=}"
+: "${DATA_PATH:=/home/patkarlab/AL_Methylation_Classifier/data/AL_24Sep2026.pkl}"
 : "${EXCLUDE_IDS=}"
 
 : "${RUNS_DIR:=$HOME/sparsh_next_runs}"      # each run gets its own new folder here (about 8 GB of weights per run)
