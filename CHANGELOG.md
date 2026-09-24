@@ -64,6 +64,13 @@ Development line in a separate repository. Changes are listed against v0.1.0.
 - Exclusion lists: blank lines and `#` comments are skipped and the first field of each
   line is the sample ID, so a CSV with IDs in the first column also works; unmatched IDs
   are listed with examples.
+- `scripts/compare_runs.py` shows only the simulated nanopore rows (`reads_*`) unless
+  `--all_conditions` is given, and adds the share of samples callable at a fixed accuracy
+  of calls (`--target_accuracy`, default 0.98) with the confidence cut-off that gives it,
+  computed from the saved out-of-fold predictions and independent of calibration.
+- `scripts/ont_coverage.py`: coverage of real nanopore samples on a run's CpGs (median, range,
+  samples per band, implied reads per CpG, share of values exactly 0 or 1), with the loader
+  checks of `predict.py`, before any prediction.
 
 ### Removed
 

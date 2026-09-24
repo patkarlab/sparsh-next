@@ -16,14 +16,15 @@ Resources per run, within the 48 GB and 12 hour request: peak memory about 21 GB
 
 ## Reading the results
 
-1. **Find your ONT coverage.** `coverage_pct` in `predict.py` output (or the old `coverage_report.csv`) is the percentage of model CpGs with at least one read. Use the `reads_*` rows closest to that range, typically `reads_0.10` to `reads_0.30`.
-2. **Main metric: balanced accuracy** on those rows, so that rare subtypes count as much as common ones. Check `cv_recall_by_class.csv` for the rarest classes.
-3. **Operating point:** `callable_share_0.90` (fraction of samples called at confidence 0.90 or more) and `accuracy_callable_0.90` (accuracy of those calls). A recipe that calls more samples at the same accuracy is better.
-4. **The `dense` row** is performance on array data. It is a sanity check, not the deployment condition.
-5. **Noise:** differences of 1–2 points between single runs can be chance. Rerun the top two recipes with another seed and compare again, for example `qsub -v RECIPE=default,SEED=43,RUN_NAME=default_seed43 jobs/train.pbs`.
-6. **Decision:** take the recipe with the highest mean balanced accuracy over the `reads_*` rows in your coverage range, provided `accuracy_callable_0.90` is not lower. Then run `jobs/predict.pbs` with that run on the ONT cohort.
+SPARSH-next classifies nanopore samples only, so `compare_runs.py` shows the `reads_*` rows: simulated runs in which a fraction of the model's CpGs has one or a few reads. The `dense` row (array profiles) and the `mask_*` rows (array beta values at the covered CpGs) describe inputs a nanopore run never produces; `--all_conditions` shows them.
 
-Calibration changes confidence, so a threshold of 0.90 does not mean the same as it did for the v0.1.0 model. Re-derive the operating point from `accuracy_callable` and `callable_share` in the CV `reads_*` rows and in the ONT evaluation.
+1. **Find your ONT coverage.** `python scripts/ont_coverage.py --run ~/sparsh_next_runs/default /path/to/ont_folder` gives, per folder, the percentage of model CpGs with at least one read (median, range, samples per band), checks that the files load, and shows whether the values look like read calls (mostly exactly 0 or 1). Use the `reads_*` rows that span that range.
+2. **Main metric: balanced accuracy** on those rows, so that rare subtypes count as much as common ones. Check `cv_recall_by_class.csv` for the rarest classes.
+3. **Operating point:** `callable_share_0.90` (fraction of samples called at confidence 0.90 or more) and `accuracy_callable_0.90` (accuracy of those calls). These depend on calibration, which can differ by coverage. The table *callable share at 98% accuracy of calls* does not: it calls samples from the most confident down, stopping where the calls would fall below 98% correct, and shows the confidence cut-off at which that happens. A recipe that calls more samples there knows better when it is right; a cut-off far from 0.90 means its confidences are off at that coverage.
+4. **Noise:** differences of 1–2 points between single runs can be chance. Rerun the top two recipes with another seed and compare again, for example `qsub -v RECIPE=default,SEED=43,RUN_NAME=default_seed43 jobs/train.pbs`.
+5. **Decision:** take the recipe with the highest mean balanced accuracy over the `reads_*` rows in your coverage range, provided it does not call fewer samples at 98% accuracy of calls. Then run `jobs/predict.pbs` with that run on the ONT cohort.
+
+Calibration changes confidence, so a threshold of 0.90 does not mean the same as it did for the v0.1.0 model. Re-derive the operating point from the CV `reads_*` rows and from the ONT evaluation.
 
 ## What the synthetic tests showed
 

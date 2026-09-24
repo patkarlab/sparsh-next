@@ -31,7 +31,8 @@ step train_legacy python scripts/train.py --data_path "$TMP/data/train.pkl" --ou
                       --imbalance legacy_upsample --train_sim mask --val_sim mask --coverage_mode schedule
 step predict      python scripts/predict.py --model_dir "$TMP/run_new" --ont_dir "$TMP/data/ont" \
                       --ground_truth "$TMP/data/ground_truth.csv" --output_dir "$TMP/pred" --device cpu
-step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new"
+step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new" --output "$TMP/comparison.csv"
+step ont_coverage python scripts/ont_coverage.py --run "$TMP/run_new" "$TMP/data/ont" --output "$TMP/ont_coverage.csv"
 step benchmark    python scripts/gpu_benchmark.py --device cpu --n_cpgs 2000 --hidden_dims 16 --epochs 1 \
                       --largest_class 20 --n_inner 5 --n_test 5
 
@@ -50,6 +51,12 @@ g = pd.read_csv(f"{tmp}/checks/groups.csv")
 assert len(g) == 2, "the planted duplicate pair must be found"
 m = pd.read_csv(f"{tmp}/run_new/cv_metrics_by_condition.csv")
 assert {"dense", "reads_0.20", "mask_0.20"} <= set(m["condition"])
+c = pd.read_csv(f"{tmp}/comparison.csv", index_col=0)
+assert "callable_share_at_accuracy_0.98" in set(c["metric"]), "calibration-free table missing"
+assert not any(str(i).startswith(("dense", "mask_")) for i in c.index), "only reads_* rows by default"
+o = pd.read_csv(f"{tmp}/ont_coverage.csv")
+assert len(o) == 8 and o["error"].isna().all(), o
+assert o["coverage_pct"].between(10, 40).all() and (o["share_0_or_1"] > 0.8).all(), o
 print("contents ok")
 PY
 echo "SMOKE TEST PASSED"
