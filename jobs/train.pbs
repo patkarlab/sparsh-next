@@ -1,22 +1,29 @@
 #!/bin/bash
 #PBS -N sparsh_next
-#PBS -q gpu
-#PBS -l select=1:ncpus=8:ngpus=1:mem=120gb
-#PBS -l walltime=48:00:00
+#PBS -q a40
+#PBS -l select=1:ncpus=8:ngpus=1:mem=48gb
+#PBS -l walltime=12:00:00
 #PBS -j oe
-# Copy the queue and resource lines from your working v0.1.0 job if they differ.
+# Queue and resources as in the lab's working job (train_focal_fast.pbs).
 #
 # Submit from the sparsh-next folder:
+#   cd ~/projects/sparsh-next
 #   qsub -v RECIPE=default jobs/train.pbs
 # RECIPE is one of: default, legacy, scaled, mask_sim, schedule (the five comparison runs),
 # scaled_schedule, or final (default recipe plus one extra model on all samples). See docs/EXPERIMENTS.md.
-# Optional: RUN_NAME=... (folder name; defaults to the recipe name) and SEED=... (default 42),
-# e.g. qsub -v RECIPE=default,SEED=43,RUN_NAME=default_seed43 jobs/train.pbs
+# Optional: RUN_NAME=... (folder name; defaults to the recipe name), SEED=... (default 42), and
+# EXTRA_ARGS="..." for any other scripts/train.py option, for example
+#   qsub -v RECIPE=default,RUN_NAME=default_seed43,SEED=43 jobs/train.pbs
+#   qsub -v RECIPE=default,RUN_NAME=default_ls0,EXTRA_ARGS="--label_smoothing 0" jobs/train.pbs
 
 set -eo pipefail
 cd "${PBS_O_WORKDIR:-$(pwd)}"
+[ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
 source "${SETTINGS_FILE:-jobs/settings.sh}"
 source jobs/common.sh
+require_file DATA_PATH "$DATA_PATH"
+[ -z "$EXCLUDE_IDS" ] || require_file EXCLUDE_IDS "$EXCLUDE_IDS"
+[ -z "$GROUPS_FILE" ] || require_file GROUPS_FILE "$GROUPS_FILE"
 
 RECIPE="${RECIPE:-default}"
 case "$RECIPE" in
@@ -30,7 +37,9 @@ case "$RECIPE" in
   *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
 esac
 RUN_NAME="${RUN_NAME:-$RECIPE}"
+echo "Recipe $RECIPE | run folder $RUNS_DIR/$RUN_NAME | extra arguments: ${EXTRA_ARGS:-none}"
 
+# shellcheck disable=SC2086  # EXCLUDE_PREFIXES, RECIPE_ARGS and EXTRA_ARGS are word lists
 python scripts/train.py \
   --data_path "$DATA_PATH" \
   --output_dir "$RUNS_DIR/$RUN_NAME" \
@@ -38,6 +47,6 @@ python scripts/train.py \
   ${GROUPS_FILE:+--groups_file "$GROUPS_FILE"} \
   --exclude_prefixes $EXCLUDE_PREFIXES \
   --seed "${SEED:-42}" \
-  $RECIPE_ARGS
+  $RECIPE_ARGS ${EXTRA_ARGS:-}
 
 echo "Finished $(date)"

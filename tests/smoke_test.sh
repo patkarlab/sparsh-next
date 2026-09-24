@@ -3,7 +3,7 @@
 # temporary folder that is deleted afterwards. Run from the sparsh-next folder:
 #   bash tests/smoke_test.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -19,6 +19,10 @@ step() {
 step make_data    python tests/make_synthetic.py --output_dir "$TMP/data"
 step check_data   python scripts/check_data.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/checks" \
                       --exclude_prefixes MPAL
+printf '# samples to leave out\nGSM100001\n\nGSM100002,replicate\n' > "$TMP/exclude.txt"
+step exclusion    python scripts/check_data.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/checks_excl" \
+                      --exclude_prefixes MPAL --exclude_ids "$TMP/exclude.txt"
+grep -q "Excluding 2 listed samples" "$TMP/exclusion.log" || { echo "FAIL  exclusion list not applied"; exit 1; }
 step train_new    python scripts/train.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/run_new" \
                       --exclude_prefixes MPAL --groups_file "$TMP/checks/groups.csv" \
                       --n_folds 2 --epochs 3 --hidden_dims 32 16 --device cpu --final_model

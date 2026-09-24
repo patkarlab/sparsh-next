@@ -15,22 +15,18 @@ On github.com, signed in as patkarlab: **New repository** > name `sparsh-next` >
 
 ## 2. Put the code on the server
 
-Make a projects folder if you do not have one, outside the existing `sparsh` folder:
+Files from Claude arrive in `~/inbox/from_claude`. Copy the zip from there into a projects folder, outside the existing `sparsh` folder, and unpack it:
 
 ```bash
 mkdir -p ~/projects
-```
-
-Drag `sparsh-next.zip` from Finder onto the `projects` folder in the VS Code Explorer (or upload it with Cyberduck). Then:
-
-```bash
+cp ~/inbox/from_claude/sparsh-next.zip ~/projects/
 cd ~/projects
 unzip sparsh-next.zip
 cd sparsh-next
 git log --oneline
 ```
 
-You should see the commit list, with "Baseline: SPARSH v0.1.0" at the bottom.
+You should see the commit list, with "Baseline: SPARSH v0.1.0" at the bottom. Later changes from Claude arrive in the same inbox as `.patch` files; see [Applying updates from Claude](#applying-updates-from-claude).
 
 ## 3. Push to the new GitHub repository
 
@@ -73,15 +69,32 @@ bash tests/smoke_test.sh
 
 This trains and evaluates on synthetic data on the CPU for about a minute, writing only to a temporary folder. The last line must be `SMOKE TEST PASSED`.
 
-## 6. Point the jobs at your data
+## 6. Check the job settings
 
-Open `jobs/settings.sh` in VS Code and edit the values after `:=`:
+`jobs/settings.sh` and the `#PBS` lines are filled in from your working job, `~/train_focal_fast.pbs`:
 
-- `DATA_PATH`: the training pickle you use now (it is only read).
-- `RUNS_DIR`: where runs are written. Each full run saves about 8 GB of model weights, so choose a disk with room for about 40 GB.
-- `EXCLUDE_IDS`: the sample exclusion list you use now, if any.
+| Setting | Value |
+| --- | --- |
+| Training pickle (`DATA_PATH`) | `~/projects/sparsh/data/imputed_nonbin_greater5.pkl`, only read |
+| Exclusion list (`EXCLUDE_IDS`) | `~/projects/sparsh/data/ids_to_junk_fs.txt` |
+| Runs (`RUNS_DIR`) | `~/sparsh_next_runs`; about 8 GB of model weights per run |
+| Queue and resources | `a40`, 8 CPUs, 1 GPU, 48 GB, 12 hours |
+| Environment | `module load cuda/12.3`, then `conda activate sparsh_next` from `~/miniconda3` |
+| Classes left out (`EXCLUDE_PREFIXES`) | MPAL, AML_NOS, B-ALL_NOS, as in the v0.1.0 job template (`train_focal_fast.pbs` leaves out only MPAL) |
 
-Compare the `#PBS` lines at the top of `jobs/train.pbs` (queue, GPU, memory, walltime) with a PBS script that already works for you and copy yours over if they differ. If the environment does not activate inside a job, replace the activation block in `jobs/common.sh` with the lines from that working script.
+Check them:
+
+```bash
+bash jobs/check_settings.sh
+```
+
+The last line must be `SETTINGS OK`; the check also shows the free space and your quota for `RUNS_DIR`. If the training pickle or the exclusion list is reported missing, `train_focal_fast.pbs` is submitted from another folder. Find it:
+
+```bash
+find ~ -maxdepth 4 -name imputed_nonbin_greater5.pkl 2>/dev/null
+```
+
+Open `jobs/settings.sh` in VS Code, set `SPARSH_DIR` to the part of that path before `/data/imputed_nonbin_greater5.pkl`, save, and run the check again.
 
 ## 7. Check the data
 
@@ -90,7 +103,7 @@ qsub jobs/check_data.pbs
 qstat -u $USER
 ```
 
-When it finishes, open `RUNS_DIR/data_checks/` (default `~/sparsh_next_runs/data_checks/`):
+The job log, `sparsh_next_checks.o<job number>` in the `sparsh-next` folder, shows how many samples the exclusion list removed and which classes were dropped. Then open `RUNS_DIR/data_checks/` (default `~/sparsh_next_runs/data_checks/`):
 
 - `class_counts.csv`: confirm these are the classes you expect after the label merges and exclusions.
 - `source_by_class.csv`: classes that come almost entirely from one Source_Dataset are listed in the job output.
@@ -135,6 +148,26 @@ git push
 ```
 
 Run outputs, model weights and data are excluded by `.gitignore`, so only code is pushed.
+
+## Applying updates from Claude
+
+Updates arrive in `~/inbox/from_claude` as `.patch` files. Each one becomes a new commit with its own message:
+
+```bash
+cd ~/projects/sparsh-next
+git am ~/inbox/from_claude/<patch file>
+git log --oneline | head -3
+```
+
+If git stops with "Please tell me who you are", nothing has been applied yet. Set your name and email for this repository only (the `patkarlab` account may be shared) and run the same `git am` again:
+
+```bash
+git config user.name "Your Name"
+git config user.email "you@example.org"
+git am ~/inbox/from_claude/<patch file>
+```
+
+If git stops with "does not match index", a file the patch changes has uncommitted edits of yours. Run `git am --abort`, then commit those edits (or discard them with `git checkout -- <file>`), and apply again. Push afterwards (`git push`) so GitHub has the update.
 
 ## Removing SPARSH-next
 

@@ -14,6 +14,7 @@ Conventions used throughout this code base
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -69,14 +70,26 @@ def apply_label_map(labels: Sequence[str], label_map: Dict[str, str], log: bool 
 # =============================================================================
 
 def load_ids_to_exclude(path: Optional[str]) -> Set[str]:
-    """One sample ID per line. A missing file is an error, not a silent no-op."""
+    """
+    One sample ID per line. Blank lines and lines starting with '#' are skipped; when a
+    line has several fields (comma, tab or space separated) the first is the ID, so a
+    CSV with the IDs in its first column also works. A missing file is an error, not a
+    silent no-op.
+    """
     if path is None:
         return set()
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Exclusion file not found: {p}")
+    ids = set()
     with open(p) as f:
-        ids = {line.strip() for line in f if line.strip()}
+        for line in f:
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            first = re.split(r"[,\t ]", text, maxsplit=1)[0].strip().strip('"').strip()
+            if first:
+                ids.add(first)
     logger.info(f"Loaded {len(ids)} sample IDs to exclude from {p}")
     return ids
 
@@ -195,7 +208,8 @@ def load_training_data(
         keep = np.array([s not in exclude_ids for s in sample_ids])
         unknown = exclude_ids - set(sample_ids)
         if unknown:
-            logger.warning(f"  {len(unknown)} IDs in the exclusion file are not in the data")
+            logger.warning(f"  {len(unknown)} IDs in the exclusion file are not in the data, "
+                           f"e.g. {sorted(unknown)[:3]}")
         logger.info(f"  Excluding {int((~keep).sum())} listed samples")
         bundle = subset(bundle, keep)
     return bundle

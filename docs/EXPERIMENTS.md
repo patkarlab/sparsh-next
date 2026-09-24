@@ -10,7 +10,9 @@ Five runs, one GPU job each, decide the recipe on your data (`bash jobs/submit_e
 | `mask_sim` | Training keeps array betas at observed CpGs instead of simulated reads | Value of simulating reads |
 | `schedule` | v0.1.0 coverage schedule (3% to 20%, one level per epoch) instead of 2–50% per sample | Which coverage range to train on |
 
-`sampler_alpha` (the v0.1.0 recipe without `--upsample_minority`) is not in the set because it collapsed in every test below; run it with `python scripts/train.py ... --imbalance sampler_alpha` if you want to see it on your data.
+`sampler_alpha` (the v0.1.0 recipe without `--upsample_minority`) is not in the set because it collapsed in every test below; to see it on your data: `qsub -v RECIPE=default,RUN_NAME=sampler_alpha,EXTRA_ARGS="--imbalance sampler_alpha" jobs/train.pbs`.
+
+Resources per run, within the 48 GB and 12 hour request: peak memory about 21 GB for `default` and 28 GB for `legacy` (measured on synthetic data with 29 classes of 6 to 370 samples and one tenth of the CpGs, then scaled up; conservative); run time roughly 1–3 hours on one A40 (an estimate; the training log prints the elapsed time every 25 epochs).
 
 ## Reading the results
 
@@ -47,6 +49,6 @@ Synthetic data show mechanisms, not the size of the effects on your cohort; the 
 
 - **Coverage range:** set `--cov_min` and `--cov_max` (random mode) to span your ONT coverage distribution with some margin, for example its 5th percentile halved to its 95th percentile doubled.
 - **Deployment model:** `predict.py` uses the fold ensemble by default. `RECIPE=final` also trains one model on all samples (minus an inner split); compare both on the ONT cohort with `--use ensemble` and `--use final`.
-- **Loss settings:** label smoothing (`--label_smoothing 0`) and focal gamma (`--focal_gamma 0` or `1`) make probabilities less confident; temperature scaling corrects part of that. Worth one comparison each.
-- **Width:** `--hidden_dims 2048 1024 512` against the default `1024 512 256`, if GPU memory allows.
+- **Loss settings:** label smoothing (`--label_smoothing 0`) and focal gamma (`--focal_gamma 0` or `1`) make probabilities less confident; temperature scaling corrects part of that. Worth one comparison each, passed through `EXTRA_ARGS`, for example `qsub -v RECIPE=default,RUN_NAME=default_ls0,EXTRA_ARGS="--label_smoothing 0" jobs/train.pbs`.
+- **Width:** `--hidden_dims 2048 1024 512` against the default `1024 512 256`, if GPU memory allows (`EXTRA_ARGS="--hidden_dims 2048 1024 512"`).
 - **Known limitation:** an observed value of exactly 0.5 (one of two reads methylated) is encoded like a missing CpG, about 1–3% of observed CpGs at 10–30% coverage.

@@ -50,6 +50,15 @@ Development line in a separate repository. Changes are listed against v0.1.0.
   `jobs/check_data.pbs`, `jobs/predict.pbs`, `jobs/submit_experiments.sh`.
 - `tests/smoke_test.sh`: the whole pipeline on synthetic data in about a minute.
 - `docs/SETUP.md`, `docs/EXPERIMENTS.md`.
+- `jobs/check_settings.sh`: checks the data paths, conda environment, free space and quota
+  before anything is submitted; `jobs/submit_experiments.sh` runs it first. Jobs stop at
+  once with a clear message if an input file is missing or the environment does not activate.
+- `EXTRA_ARGS` in `jobs/train.pbs` passes further `scripts/train.py` options.
+- Job settings and `#PBS` lines filled in from the lab's working job (`a40` queue,
+  8 CPUs, 1 GPU, 48 GB, 12 hours; `module load cuda/12.3`; conda in `~/miniconda3`).
+- Exclusion lists: blank lines and `#` comments are skipped and the first field of each
+  line is the sample ID, so a CSV with IDs in the first column also works; unmatched IDs
+  are listed with examples.
 
 ### Removed
 
