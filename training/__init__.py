@@ -1,39 +1,35 @@
-"""
-SPARSH Training module with cross-validation, tuning, and reproducibility.
-"""
+"""SPARSH-next training module: nested cross-validation, final model, reproducibility."""
 
+from .reproducibility import generate_run_id, get_environment_metadata, set_deterministic_mode
 from .trainer import (
-    train_epoch,
-    evaluate,
+    IMBALANCE_MODES,
+    BalancedBatchSampler,
+    FocalLoss,
+    TrainConfig,
     cross_validate,
+    evaluation_conditions,
+    fit_temperature,
+    inner_split,
+    split_indices,
     train_final_model,
+    train_one_model,
 )
-from .tuning import (
-    tune_hyperparameters,
-    get_tuned_config,
-)
-from .training_curves import TrainingCurveTracker
-from .reproducibility import (
-    set_deterministic_mode,
-    generate_run_id,
-    get_environment_metadata,
-    save_config_snapshot,
-    save_split_indices,
-    save_fold_indices,
-)
+from .training_curves import save_history
 
 __all__ = [
-    "train_epoch",
-    "evaluate",
+    "IMBALANCE_MODES",
+    "BalancedBatchSampler",
+    "FocalLoss",
+    "TrainConfig",
     "cross_validate",
-    "train_final_model",
-    "tune_hyperparameters",
-    "get_tuned_config",
-    "TrainingCurveTracker",
-    "set_deterministic_mode",
+    "evaluation_conditions",
+    "fit_temperature",
     "generate_run_id",
     "get_environment_metadata",
-    "save_config_snapshot",
-    "save_split_indices",
-    "save_fold_indices",
+    "inner_split",
+    "save_history",
+    "set_deterministic_mode",
+    "split_indices",
+    "train_final_model",
+    "train_one_model",
 ]
