@@ -30,24 +30,40 @@ You should see the commit list, with "Baseline: SPARSH v0.1.0" at the bottom. La
 
 ## 3. Push to the new GitHub repository
 
-First check that the server can reach GitHub:
+The repository belongs to the patkarlab GitHub account. The GitHub login already saved on the server belongs to another account, so this repository pushes over SSH with its own key, registered on the patkarlab account and used only through the host name `github-patkarlab`. Other repositories on the server keep their login.
+
+Make the key and print it:
 
 ```bash
-git ls-remote https://github.com/patkarlab/sparsh.git > /dev/null && echo "GitHub reachable"
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+ssh-keygen -t ed25519 -N "" -C "patkarlab@ln1 sparsh-next" -f ~/.ssh/id_ed25519_patkarlab
+cat ~/.ssh/id_ed25519_patkarlab.pub
 ```
 
-If it prints `GitHub reachable`:
+In a private browser window, sign in to github.com as patkarlab and open https://github.com/settings/ssh/new. Title `ln1 sparsh-next`, key type Authentication Key, paste the printed line, **Add SSH key**. Then, once only:
 
 ```bash
-git remote add origin https://github.com/patkarlab/sparsh-next.git
+cat >> ~/.ssh/config <<'EOF'
+
+Host github-patkarlab
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile ~/.ssh/id_ed25519_patkarlab
+    IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+ssh -T github-patkarlab
+```
+
+At the first connection, accept GitHub's host key if its fingerprint is one of those GitHub publishes (docs.github.com, "GitHub's SSH key fingerprints"). The last command must print `Hi patkarlab! You've successfully authenticated`. Port 443 is used because port 22 is often blocked on institutional networks. Then:
+
+```bash
+git remote add origin github-patkarlab:patkarlab/sparsh-next.git
 git push -u origin main
 ```
 
-If git asks for a password, paste a GitHub personal access token rather than your account password (github.com > Settings > Developer settings > Personal access tokens; give it access to `sparsh-next`). If you already push to `patkarlab/sparsh` from this server with an SSH key, use `git@github.com:patkarlab/sparsh-next.git` as the address instead. Pushing from the VS Code Source Control panel also works and offers to sign in to GitHub in the browser.
-
-If the server cannot reach GitHub, run the same unzip and push commands in the Mac Terminal instead. The server copy from step 2 is still the one you work with.
-
-Refresh the GitHub page; the files and commits should now be there.
+Refresh the GitHub page; the files and commits should now be there. Pushing with **Sync** in VS Code uses the same key.
 
 ## 4. Create a separate environment
 
@@ -71,30 +87,40 @@ This trains and evaluates on synthetic data on the CPU for about a minute, writi
 
 ## 6. Check the job settings
 
-`jobs/settings.sh` and the `#PBS` lines are filled in from your working job, `~/train_focal_fast.pbs`:
+Queues, resources and environment in `jobs/settings.sh` and the `#PBS` lines follow your working job, `~/train_focal_fast.pbs`:
 
 | Setting | Value |
 | --- | --- |
-| Training pickle (`DATA_PATH`) | `~/projects/sparsh/data/imputed_nonbin_greater5.pkl`, only read |
-| Exclusion list (`EXCLUDE_IDS`) | `~/projects/sparsh/data/ids_to_junk_fs.txt` |
-| Runs (`RUNS_DIR`) | `~/sparsh_next_runs`; about 8 GB of model weights per run |
-| Queue and resources | `a40`, 8 CPUs, 1 GPU, 48 GB, 12 hours |
+| Training runs | GPU queue(s) in `TRAIN_QUEUES` (default `a40`), 8 CPUs, 1 GPU, 48 GB, 12 hours per run |
+| Data checks and ONT prediction | `short` queue, CPU only, 8 CPUs, 48 GB, 2 hours |
 | Environment | `module load cuda/12.3`, then `conda activate sparsh_next` from `~/miniconda3` |
+| Runs (`RUNS_DIR`) | `~/sparsh_next_runs`; about 8 GB of model weights per run |
 | Classes left out (`EXCLUDE_PREFIXES`) | MPAL, AML_NOS, B-ALL_NOS, as in the v0.1.0 job template (`train_focal_fast.pbs` leaves out only MPAL) |
 
-Check them:
+Open `jobs/settings.sh` in VS Code and set the training data: `DATA_PATH` to the full path of the training pickle, and `EXCLUDE_IDS` to its exclusion list (one Sample_ID per line), or leave `EXCLUDE_IDS` empty. For example:
+
+```bash
+: "${DATA_PATH:=/home/patkarlab/data/new_training_set.pkl}"
+: "${EXCLUDE_IDS=}"
+```
+
+Then check:
 
 ```bash
 bash jobs/check_settings.sh
 ```
 
-The last line must be `SETTINGS OK`; the check also shows the free space and your quota for `RUNS_DIR`. If the training pickle or the exclusion list is reported missing, `train_focal_fast.pbs` is submitted from another folder. Find it:
+The last line must be `SETTINGS OK`. The check also shows the free space and your quota for `RUNS_DIR`, and the training queues.
+
+### Which GPU queues to use
+
+The `a40` queue runs at most 2 GPU jobs per user at a time, so the five comparison runs would run two at a time. To see what each GPU queue offers (GPU model, whether the environment works on it, and the time of one training epoch), run a short test with random numbers on each; it reads no data and saves nothing:
 
 ```bash
-find ~ -maxdepth 4 -name imputed_nonbin_greater5.pkl 2>/dev/null
+bash jobs/probe_gpus.sh
 ```
 
-Open `jobs/settings.sh` in VS Code, set `SPARSH_DIR` to the part of that path before `/data/imputed_nonbin_greater5.pkl`, save, and run the check again.
+When the jobs have finished (`qstat -u $USER`), print the results with the `grep` line the script shows. List the queues to use in `TRAIN_QUEUES`, for example `: "${TRAIN_QUEUES:=a40 a40 A40b h100 h200}"`; `jobs/submit_experiments.sh` sends the five runs to them in turn.
 
 ## 7. Check the data
 
@@ -117,7 +143,7 @@ bash jobs/submit_experiments.sh
 qstat -u $USER
 ```
 
-This submits five GPU jobs (legacy, default, scaled, mask_sim, schedule), each writing to its own folder in `RUNS_DIR`. A run never overwrites an existing folder. Each job's log is `sn_<recipe>.o<jobid>` in the `sparsh-next` folder, and `training_log.txt` in the run folder.
+This submits five GPU jobs (legacy, default, scaled, mask_sim, schedule) to the queues in `TRAIN_QUEUES`, each writing to its own folder in `RUNS_DIR`. A run never overwrites an existing folder. Each job's log is `sn_<recipe>.o<jobid>` in the `sparsh-next` folder, and `training_log.txt` in the run folder.
 
 ## 9. Compare the runs
 
@@ -171,4 +197,4 @@ If git stops with "does not match index", a file the patch changes has uncommitt
 
 ## Removing SPARSH-next
 
-Nothing else depends on it. Delete `~/projects/sparsh-next` and `RUNS_DIR`, run `conda env remove --name sparsh_next`, and delete the `sparsh-next` repository on GitHub (Settings > Danger Zone).
+Nothing else depends on it. Delete `~/projects/sparsh-next` and `RUNS_DIR`, run `conda env remove --name sparsh_next`, and delete the `sparsh-next` repository on GitHub (Settings > Danger Zone). If nothing else uses them, also remove the `github-patkarlab` block from `~/.ssh/config`, the two `~/.ssh/id_ed25519_patkarlab` files, and the key under Settings > SSH and GPG keys on the patkarlab account.

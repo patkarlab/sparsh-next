@@ -32,6 +32,8 @@ step train_legacy python scripts/train.py --data_path "$TMP/data/train.pkl" --ou
 step predict      python scripts/predict.py --model_dir "$TMP/run_new" --ont_dir "$TMP/data/ont" \
                       --ground_truth "$TMP/data/ground_truth.csv" --output_dir "$TMP/pred" --device cpu
 step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new"
+step benchmark    python scripts/gpu_benchmark.py --device cpu --n_cpgs 2000 --hidden_dims 16 --epochs 1 \
+                      --largest_class 20 --n_inner 5 --n_test 5
 
 for f in run_new/cv_metrics_by_condition.csv run_new/fold_models/fold1.pt run_new/model.pt \
          run_new/config.json pred/predictions.csv pred/summary_metrics.json checks/groups.csv; do

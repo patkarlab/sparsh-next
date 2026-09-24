@@ -46,6 +46,7 @@ else
     echo "PROBLEM  RUNS_DIR = $RUNS_DIR is not writable"; problems=$((problems + 1))
 fi
 echo "         Classes left out: ${EXCLUDE_PREFIXES:-none}"
+echo "         Training queues, in turn: ${TRAIN_QUEUES:-a40}"
 
 if [ "$problems" -eq 0 ]; then
     echo "SETTINGS OK"

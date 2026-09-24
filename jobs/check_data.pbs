@@ -1,11 +1,11 @@
 #!/bin/bash
 #PBS -N sparsh_next_checks
-#PBS -q a40
-#PBS -l select=1:ncpus=8:ngpus=1:mem=48gb
+#PBS -q short
+#PBS -l select=1:ncpus=8:mem=48gb
 #PBS -l walltime=02:00:00
 #PBS -j oe
-# Same queue and resources as train_focal_fast.pbs, so it runs where your jobs already run.
-# The checks themselves use only the CPU.
+# CPU only (about 12 GB of memory, well under an hour), so it runs on the short queue and does not
+# take one of the GPUs that a40 allows each user.
 # Submit from the sparsh-next folder:  qsub jobs/check_data.pbs
 
 set -eo pipefail

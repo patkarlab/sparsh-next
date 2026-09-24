@@ -4,7 +4,9 @@
 #PBS -l select=1:ncpus=8:ngpus=1:mem=48gb
 #PBS -l walltime=12:00:00
 #PBS -j oe
-# Queue and resources as in the lab's working job (train_focal_fast.pbs).
+# Resources as in the lab's working job (train_focal_fast.pbs). The a40 queue runs at most 2 GPU
+# jobs per user at a time; jobs/submit_experiments.sh spreads runs over the queues in TRAIN_QUEUES
+# (jobs/settings.sh), and a single run can go elsewhere with qsub -q, e.g. qsub -q h200 -v RECIPE=... .
 #
 # Submit from the sparsh-next folder:
 #   cd ~/projects/sparsh-next

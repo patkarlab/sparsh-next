@@ -29,6 +29,7 @@ Full server setup, step by step: [docs/SETUP.md](docs/SETUP.md). Which runs to d
 ```bash
 bash tests/smoke_test.sh                  # about 1 minute on CPU; must print SMOKE TEST PASSED
 bash jobs/check_settings.sh               # paths, environment, disk; must print SETTINGS OK
+bash jobs/probe_gpus.sh                   # GPU model and epoch time on each GPU queue (random numbers only)
 qsub jobs/check_data.pbs                  # class list, duplicates, study confounding
 bash jobs/submit_experiments.sh           # five comparison runs, one GPU job each
 python scripts/compare_runs.py ~/sparsh_next_runs/{legacy,default,scaled,mask_sim,schedule}
@@ -63,7 +64,7 @@ data/                    training-data loader and the single ONT loader
 models/                  SparseNN and the sparsity simulation
 training/                nested cross-validation
 evaluation/              metrics
-scripts/                 train.py, predict.py, check_data.py, compare_runs.py
+scripts/                 train.py, predict.py, check_data.py, compare_runs.py, gpu_benchmark.py
 jobs/                    PBS jobs; settings.sh holds all paths, check_settings.sh checks them
 tests/                   synthetic data and the smoke test
 docs/                    SETUP.md, EXPERIMENTS.md

@@ -54,6 +54,11 @@ Development line in a separate repository. Changes are listed against v0.1.0.
   before anything is submitted; `jobs/submit_experiments.sh` runs it first. Jobs stop at
   once with a clear message if an input file is missing or the environment does not activate.
 - `EXTRA_ARGS` in `jobs/train.pbs` passes further `scripts/train.py` options.
+- `scripts/gpu_benchmark.py` and `jobs/probe_gpus.sh`: GPU model, PyTorch support and the time of one
+  full-size training epoch on each GPU queue, with random numbers (no data read, nothing saved).
+- `TRAIN_QUEUES` in `jobs/settings.sh`: `jobs/submit_experiments.sh` sends the runs to these queues in
+  turn (the `a40` queue runs at most 2 GPU jobs per user). Data checks and ONT prediction run on the
+  CPU queue `short`. `DATA_PATH` has no default; it is set when the training pickle is chosen.
 - Job settings and `#PBS` lines filled in from the lab's working job (`a40` queue,
   8 CPUs, 1 GPU, 48 GB, 12 hours; `module load cuda/12.3`; conda in `~/miniconda3`).
 - Exclusion lists: blank lines and `#` comments are skipped and the first field of each

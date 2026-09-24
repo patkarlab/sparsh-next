@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N sn_bench
+#PBS -q a40
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=00:20:00
+#PBS -j oe
+# GPU test with random numbers: the training data are not read, nothing is trained on real
+# samples, and nothing is saved. Submitted to each GPU queue by jobs/probe_gpus.sh.
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+[ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
+source "${SETTINGS_FILE:-jobs/settings.sh}"
+source jobs/common.sh
+echo "Queue ${PBS_QUEUE:-unknown}"
+python scripts/gpu_benchmark.py

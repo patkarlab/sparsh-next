@@ -1,9 +1,10 @@
 #!/bin/bash
 #PBS -N sparsh_next_predict
-#PBS -q a40
-#PBS -l select=1:ncpus=8:ngpus=1:mem=48gb
+#PBS -q short
+#PBS -l select=1:ncpus=8:mem=48gb
 #PBS -l walltime=02:00:00
 #PBS -j oe
+# CPU only: scoring ONT samples with the fold ensemble needs no GPU (predict.py falls back to the CPU).
 # Submit from the sparsh-next folder, for example:
 #   qsub -v RUN_NAME=default,ONT_DIR=/path/to/ont_csvs,TRUTH=/path/to/truth.csv jobs/predict.pbs
 # Results go to $RUNS_DIR/$RUN_NAME/ont_eval (a new folder inside the run).
@@ -13,6 +14,7 @@ cd "${PBS_O_WORKDIR:-$(pwd)}"
 [ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
 source "${SETTINGS_FILE:-jobs/settings.sh}"
 source jobs/common.sh
+require_file "run" "$RUNS_DIR/${RUN_NAME:?Set RUN_NAME}/config.json" "No finished training run named $RUN_NAME in $RUNS_DIR"
 [ -z "${TRUTH:-}" ] || require_file TRUTH "$TRUTH" "Check the TRUTH=... path given to qsub -v"
 
 python scripts/predict.py \

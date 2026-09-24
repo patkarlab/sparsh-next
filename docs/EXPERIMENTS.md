@@ -12,7 +12,7 @@ Five runs, one GPU job each, decide the recipe on your data (`bash jobs/submit_e
 
 `sampler_alpha` (the v0.1.0 recipe without `--upsample_minority`) is not in the set because it collapsed in every test below; to see it on your data: `qsub -v RECIPE=default,RUN_NAME=sampler_alpha,EXTRA_ARGS="--imbalance sampler_alpha" jobs/train.pbs`.
 
-Resources per run, within the 48 GB and 12 hour request: peak memory about 21 GB for `default` and 28 GB for `legacy` (measured on synthetic data with 29 classes of 6 to 370 samples and one tenth of the CpGs, then scaled up; conservative); run time roughly 1–3 hours on one A40 (an estimate; the training log prints the elapsed time every 25 epochs).
+Resources per run, within the 48 GB and 12 hour request: peak memory about 21 GB for `default` and 28 GB for `legacy` (measured on synthetic data with 29 classes of 6 to 370 samples and one tenth of the CpGs, then scaled up; conservative); run time roughly 1–3 hours on one A40 (an estimate; `bash jobs/probe_gpus.sh` measures the epoch time on each GPU queue, and the training log prints the elapsed time every 25 epochs). The `a40` queue runs at most 2 jobs per user at a time; list more queues in `TRAIN_QUEUES` to run the five together (docs/SETUP.md step 6).
 
 ## Reading the results
 
