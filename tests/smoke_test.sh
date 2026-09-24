@@ -33,6 +33,26 @@ step predict      python scripts/predict.py --model_dir "$TMP/run_new" --ont_dir
                       --ground_truth "$TMP/data/ground_truth.csv" --output_dir "$TMP/pred" --device cpu
 step compare      python scripts/compare_runs.py "$TMP/run_legacy" "$TMP/run_new" --output "$TMP/comparison.csv"
 step ont_coverage python scripts/ont_coverage.py --run "$TMP/run_new" "$TMP/data/ont" --output "$TMP/ont_coverage.csv"
+step duplicates   python - "$TMP" <<'PY'
+import sys
+import numpy as np
+from data.ont import read_ont_csv
+f = f"{sys.argv[1]}/repeated_probes.csv"
+open(f, "w").write("sample,cg1,cg2,cg1,cg3,cg2\nS1,1,,0,0.5,1\n")
+cpgs = ["cg1", "cg2", "cg3", "cg4"]
+x, info = read_ont_csv(f, cpgs)                        # default: mean of the copies with a value
+assert np.allclose(x[:3], [0.5, 1.0, 0.5]) and np.isnan(x[3]), x
+assert (info["n_repeated_probes"], info["n_repeated_multi_observed"], info["n_repeated_disagree"]) == (2, 1, 1), info
+assert (info["n_observed"], info["n_observed_first"], info["max_copies"]) == (3, 2, 2), info
+x, _ = read_ont_csv(f, cpgs, duplicates="first")
+assert x[0] == 1.0 and np.isnan(x[1]), x
+try:
+    read_ont_csv(f, cpgs, duplicates="error")
+    raise SystemExit("the error rule did not refuse repeated probes")
+except ValueError:
+    pass
+print("repeated probes ok")
+PY
 step benchmark    python scripts/gpu_benchmark.py --device cpu --n_cpgs 2000 --hidden_dims 16 --epochs 1 \
                       --largest_class 20 --n_inner 5 --n_test 5
 

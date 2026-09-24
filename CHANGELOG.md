@@ -71,6 +71,11 @@ Development line in a separate repository. Changes are listed against v0.1.0.
 - `scripts/ont_coverage.py`: coverage of real nanopore samples on a run's CpGs (median, range,
   samples per band, implied reads per CpG, share of values exactly 0 or 1), with the loader
   checks of `predict.py`, before any prediction.
+- Repeated probe IDs in ONT files (the same CpG in more than one column) are combined into the
+  mean of the copies that have a value, instead of refusing the file; `--duplicate_probes first`
+  keeps the first column (what a pandas reader does implicitly) and `error` refuses the file.
+  The loader reports how many probes were repeated and whether their copies agree;
+  `ont_coverage.py` summarises this per folder. `jobs/predict.pbs` accepts `EXTRA_ARGS`.
 
 ### Removed
 

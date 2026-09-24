@@ -14,7 +14,10 @@ goes through the same loader as prediction (data/ont.py). For each folder it pri
 - the share of observed values that are exactly 0 or 1. A CpG covered by a single
   read is always 0 or 1, which is what the read simulation used in training produces
   at low coverage; a low share means the files hold something else (for example
-  smoothed values or modification probabilities).
+  smoothed values or modification probabilities);
+- probe IDs that occur in more than one column: how many, how often two or more copies
+  have a value and whether those copies agree, and the coverage that keeping only the
+  first column of each probe would give (see --duplicate_probes and data/ont.py).
 Nothing is written unless --output is given (one line per file).
 """
 
@@ -30,7 +33,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from data.ont import read_ont_csv  # noqa: E402
+from data.ont import DUPLICATE_RULES, read_ont_csv  # noqa: E402
 
 BAND_EDGES = [0, 3, 5, 10, 20, 30, 50, 101]
 BAND_NAMES = ["<3%", "3-5%", "5-10%", "10-20%", "20-30%", "30-50%", ">=50%"]
@@ -64,6 +67,9 @@ def main():
     p.add_argument("inputs", nargs="+", help="Folders of per-sample CSV files, or CSV files")
     p.add_argument("--run", required=True, help="A finished run folder; its CpG list and training range are used")
     p.add_argument("--output", default=None, help="Optional CSV with one line per file")
+    p.add_argument("--duplicate_probes", choices=DUPLICATE_RULES, default="mean",
+                   help="Probe IDs repeated in a file: mean of the copies with a value (default, as predict.py), "
+                        "first column only, or refuse the file")
     args = p.parse_args()
 
     run = Path(args.run).expanduser()
@@ -86,7 +92,7 @@ def main():
         rows, errors = [], []
         for f in files:
             try:
-                x, info = read_ont_csv(f, cpg_ids)
+                x, info = read_ont_csv(f, cpg_ids, duplicates=args.duplicate_probes)
             except Exception as e:  # report every unreadable file and carry on
                 errors.append((f.name, str(e)))
                 records.append({"input": label, "file": f.name, "error": str(e)})
@@ -96,7 +102,12 @@ def main():
                    "n_columns": info["n_columns"], "n_model_cpgs": info["n_matched"],
                    "n_observed": info["n_observed"], "coverage_pct": 100.0 * info["coverage"],
                    "share_0_or_1": float(np.isin(v, (0.0, 1.0)).mean()) if len(v) else float("nan"),
-                   "mean_value": float(v.mean()) if len(v) else float("nan"), "error": ""}
+                   "mean_value": float(v.mean()) if len(v) else float("nan"),
+                   "n_repeated_probes": info["n_repeated_probes"], "max_copies": info["max_copies"],
+                   "n_repeated_multi_observed": info["n_repeated_multi_observed"],
+                   "n_repeated_disagree": info["n_repeated_disagree"],
+                   "coverage_first_column_pct": 100.0 * info["n_observed_first"] / max(1, len(cpg_ids)),
+                   "error": ""}
             rows.append(row)
             records.append(row)
 
@@ -119,6 +130,19 @@ def main():
         print(f"   Outside the trained range ({100 * lo:g}-{100 * hi:g}%): {below} below, {above} above")
         print(f"   Observed values that are exactly 0 or 1: median {100 * df['share_0_or_1'].median():.0f}% per sample; "
               f"mean observed value: median {df['mean_value'].median():.2f}")
+        rep = df[df["n_repeated_probes"] > 0]
+        if len(rep):
+            multi = rep["n_repeated_multi_observed"]
+            share_multi = multi / rep["n_repeated_probes"]
+            share_disagree = (rep["n_repeated_disagree"] / multi.where(multi > 0)).dropna()
+            disagree = f"{100 * share_disagree.median():.0f}%" if len(share_disagree) else "n/a"
+            print(f"   Repeated probe IDs in {len(rep)} of {len(df)} files: median {rep['n_repeated_probes'].median():.0f} "
+                  f"probes per file, up to {int(rep['max_copies'].max())} columns each; combined by "
+                  f"--duplicate_probes {args.duplicate_probes}")
+            print(f"     two or more copies with a value: median {100 * share_multi.median():.1f}% of repeated probes; "
+                  f"copies that differ, among those: median {disagree}")
+            print(f"     coverage keeping only the first column of each probe: median "
+                  f"{rep['coverage_first_column_pct'].median():.1f}% (combined: {rep['coverage_pct'].median():.1f}%)")
 
     if args.output and records:
         pd.DataFrame(records).to_csv(args.output, index=False, float_format="%.4f")

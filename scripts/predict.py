@@ -33,7 +33,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from data.dataset import apply_label_map  # noqa: E402
-from data.ont import read_ont_csv  # noqa: E402
+from data.ont import DUPLICATE_RULES, read_ont_csv  # noqa: E402
 from evaluation.metrics import balanced_accuracy, confusion_frame, expected_calibration_error  # noqa: E402
 from models.sparse_nn import load_model, predict_logits, softmax_np  # noqa: E402
 
@@ -54,6 +54,9 @@ def parse_args():
     p.add_argument("--threshold", type=float, default=None, help="Default: the value stored with the model")
     p.add_argument("--min_coverage", type=float, default=0.01,
                    help="Samples with fewer observed CpGs (fraction) are marked not callable")
+    p.add_argument("--duplicate_probes", choices=DUPLICATE_RULES, default="mean",
+                   help="Probe IDs repeated in a file: mean of the copies with a value (default), "
+                        "first column only, or refuse the file (see data/ont.py)")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
 
@@ -122,7 +125,7 @@ def main():
     for f in files:
         sample = f.stem.strip().upper()
         try:
-            x, info = read_ont_csv(f, cpg_ids)
+            x, info = read_ont_csv(f, cpg_ids, duplicates=args.duplicate_probes)
         except (ValueError, OSError) as e:
             errors.append({"sample": sample, "file": str(f), "error": str(e)})
             print(f"  ERROR {f.name}: {e}")
@@ -131,7 +134,7 @@ def main():
             x = np.where(np.isnan(x), np.nan, np.clip(x, clip[0], clip[1])).astype(np.float32)
         rows.append({"sample": sample, "file": f.name, "n_columns": info["n_columns"],
                      "n_matched": info["n_matched"], "n_observed": info["n_observed"],
-                     "coverage_pct": 100.0 * info["coverage"]})
+                     "coverage_pct": 100.0 * info["coverage"], "n_repeated_probes": info["n_repeated_probes"]})
         X_ok.append(x)
     if errors:
         pd.DataFrame(errors).to_csv(out / "input_errors.csv", index=False)
@@ -139,6 +142,11 @@ def main():
         sys.exit("No readable samples")
     X = np.vstack(X_ok)
     meta = pd.DataFrame(rows)
+    with_rep = meta["n_repeated_probes"] > 0
+    if with_rep.any():
+        print(f"Repeated probe IDs in {int(with_rep.sum())} of {len(meta)} files (median "
+              f"{meta.loc[with_rep, 'n_repeated_probes'].median():.0f} per file); copies combined by "
+              f"--duplicate_probes {args.duplicate_probes}")
 
     # ------------------------------------------------------------ predict
     probs = np.mean([softmax_np(predict_logits(m, X, device), t) for m, t in models], axis=0)
@@ -190,6 +198,7 @@ def main():
     y_pred = ins["prediction"].map({c: i for i, c in enumerate(classes)}).to_numpy()
     summary = {
         "model_dir": str(model_dir), "models_used": use, "threshold": threshold,
+        "duplicate_probes": args.duplicate_probes,
         "n_predicted": int(len(meta)), "n_unreadable": len(errors),
         "n_with_truth": int(len(ev)), "n_without_truth": len(no_truth), "truth_without_file": no_file,
         "n_out_of_scheme": int((~ev["in_scheme"]).sum()),

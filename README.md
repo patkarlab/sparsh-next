@@ -40,7 +40,7 @@ qsub -v RUN_NAME=default,ONT_DIR=/path/to/ont_csvs,TRUTH=/path/to/truth.csv jobs
 ## Inputs
 
 - **Training pickle**: a pandas DataFrame with one row per sample; CpG columns named `cg...` holding beta values in [0, 1] (missing values allowed); `ANNOTATION`; optionally `Sample_ID` (otherwise the index is used) and `Source_Dataset`.
-- **ONT sample**: a CSV with one data row. The first column is the sample name; every other column is a CpG with the methylated fraction of reads, between 0 and 1.
+- **ONT sample**: a CSV with one data row. The first column is the sample name; every other column is a CpG with the methylated fraction of reads, between 0 and 1. A probe ID that occurs in more than one column is combined into the mean of its copies that have a value (`--duplicate_probes` in `predict.py` and `ont_coverage.py`: `mean`, `first` or `error`).
 - **Ground truth**: a CSV with columns `sample,true_label`. Raw subtype names are fine; the model's label map is applied.
 
 ## Outputs of a training run
