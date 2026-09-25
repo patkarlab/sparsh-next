@@ -1,7 +1,8 @@
 #!/bin/bash
-# Checks for the fifth-round additions (relabelled training pickle, merged groups, NPM1/IDH check with island
-# decisions, locked recipe arguments) on synthetic data: CPU only, about a minute, writes only to a temporary
-# folder that is deleted afterwards. Run from the sparsh-next folder:
+# Checks for the fifth-round additions (relabelled training pickle with class renames, merged groups, NPM1/IDH
+# check with island decisions, locked recipe arguments, label audit, comparison of two class schemes) on synthetic
+# data: CPU only, one to two minutes, writes only to a temporary folder that is deleted afterwards. Run from the
+# sparsh-next folder:
 #   bash tests/smoke_test_round5.sh
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -50,7 +51,9 @@ step idh_check    python scripts/npm1_idh_check.py --data_path "$TMP/data/train.
                       --npm1_class "AML_mutated NPM1" --island "$TMP/island.csv" --new_label AML_HOX_IDH \
                       --out_dir "$TMP/idh" --repeats 2
 step pickle       python scripts/make_training_pickle.py --data_path "$TMP/data/train.pkl" --output "$TMP/new.pkl" \
-                      --relabel "$TMP/idh/relabel_AML_HOX_IDH.csv" "$TMP/relabel_b.csv"
+                      --relabel "$TMP/idh/relabel_AML_HOX_IDH.csv" "$TMP/relabel_b.csv" --rename "T-ALL=T-ALL_renamed"
+step rename_bad   bash -c "python scripts/make_training_pickle.py --data_path '$TMP/data/train.pkl' --output '$TMP/z.pkl' \
+                      --rename NO_SUCH_CLASS=X 2>&1 | grep -q 'no sample has the label'"
 step pickle_again bash -c "python scripts/make_training_pickle.py --data_path '$TMP/data/train.pkl' --output '$TMP/new.pkl' \
                       2>&1 | grep -q 'exists'"
 step clash        bash -c "python scripts/make_training_pickle.py --data_path '$TMP/data/train.pkl' --output '$TMP/x.pkl' \
@@ -64,9 +67,25 @@ step train_locked python scripts/train.py --data_path "$TMP/new.pkl" --output_di
                       --train_sim binary --val_sim binary --eval_sims binary oneread --cov_min 0.02 --cov_max 0.95 \
                       --coverage_dist uniform --input_encoding scaled --val_coverages 0.1 0.5 0.9 \
                       --eval_coverages 0.1 0.5 0.9 --dilution_prob 0.5 --blast_min 0.2 --val_dilution \
+                      --eval_blasts 1 0.5 0.3 --eval_sims binary --normal_class T-ALL_renamed \
+                      --exclude_classes B-ALL_TCF3-PBX1 --groups_file "$TMP/groups_merged.csv" \
+                      --min_samples 2
+step train_orig   python scripts/train.py --data_path "$TMP/data/train.pkl" --output_dir "$TMP/run_orig" \
+                      --exclude_prefixes MPAL --n_folds 2 --epochs 3 --hidden_dims 32 16 --device cpu \
+                      --train_sim binary --val_sim binary --cov_min 0.02 --cov_max 0.95 \
+                      --coverage_dist uniform --input_encoding scaled --val_coverages 0.1 0.5 0.9 \
+                      --eval_coverages 0.1 0.5 0.9 --dilution_prob 0.5 --blast_min 0.2 --val_dilution \
                       --eval_blasts 1 0.5 0.3 --eval_sims binary --normal_class T-ALL \
                       --exclude_classes B-ALL_TCF3-PBX1 --groups_file "$TMP/groups_merged.csv" \
                       --min_samples 2
+step schemes      python scripts/compare_class_schemes.py "$TMP/run_orig" "$TMP/run_locked" \
+                      --rename T-ALL=T-ALL_renamed --conditions binary_0.50 binary_0.90 --output "$TMP/schemes.csv"
+step schemes_bad  bash -c "python scripts/compare_class_schemes.py '$TMP/run_orig' '$TMP/run_locked' \
+                      --rename NO_SUCH_CLASS=X --conditions binary_0.50 2>&1 | grep -q 'not a class'"
+step audit        python scripts/label_audit.py --data_path "$TMP/new.pkl" --classes AML B-ALL_High \
+                      --run "$TMP/run_locked" --n_cpgs 2000 --n_pcs 10 --k 5 --out_dir "$TMP/audit"
+step audit_norun  python scripts/label_audit.py --data_path "$TMP/data/train.pkl" --n_cpgs 1000 --n_pcs 5 --k 5 \
+                      --out_dir "$TMP/audit_norun"
 step contents     python - "$TMP" <<'PY'
 import json
 import os
@@ -90,7 +109,9 @@ for s, ev in e.items():
         assert move[s] == "keep label", (s, move[s])
 rel = pd.read_csv(f"{tmp}/idh/relabel_AML_HOX_IDH.csv", dtype=str)
 ch = pd.read_csv(f"{tmp}/new.pkl.changes.csv", dtype=str)
-assert set(ch["Sample_ID"]) == set(rel["Sample_ID"]) | set(pd.read_csv(f"{tmp}/relabel_b.csv", dtype=str)["Sample_ID"])
+assert set(ch.loc[ch["file"] != "--rename", "Sample_ID"]) == \
+    set(rel["Sample_ID"]) | set(pd.read_csv(f"{tmp}/relabel_b.csv", dtype=str)["Sample_ID"])
+assert (ch.loc[ch["file"] == "--rename", "new_label"] == "T-ALL_renamed").all()
 ids = (new["Sample_ID"] if "Sample_ID" in new.columns else pd.Series(new.index, index=new.index)).astype(str)
 lab = dict(zip(ids, new["ANNOTATION"].astype(str)))
 assert all(lab[s] == "AML_HOX_IDH" for s in rel["Sample_ID"])
@@ -101,6 +122,29 @@ assert "AML_HOX_IDH" in json.dumps(cfg["data"].get("class_counts", {})), "new cl
 assert cfg["data"]["groups_file"].endswith("groups_merged.csv")
 for f in ("summary.txt", "cv_auc.csv", "scores.csv", "differential_cpgs.csv"):
     assert os.path.exists(f"{tmp}/idh/{f}"), f
+assert (lab_all := new["ANNOTATION"].astype(str)).str.startswith("T-ALL_renamed").sum() > 0 and not (lab_all == "T-ALL").any()
+au = pd.read_csv(f"{tmp}/audit/audit.csv")
+assert {"same_label_of_5", "neighbour_majority", "cv_own_prob_mean", "cv_own_prob_binary_0.90", "flag_lamprey",
+        "flag_review"} <= set(au.columns), au.columns
+assert au["cv_own_prob_mean"].notna().sum() > 0 and au["label"].str.startswith(("AML", "B-ALL_High")).all()
+assert au["same_label_of_5"].between(0, 5).all() and au["same_label_fraction"].between(0, 1).all()
+size = au["label"].map(au["label"].value_counts())
+small = size <= 5                                         # fewer possible same-label neighbours than k
+assert small.any(), "no small class in the audit"
+assert ((au.loc[small, "same_label_fraction"] * (size[small] - 1)).round() == au.loc[small, "same_label_of_5"]).all()
+assert os.path.exists(f"{tmp}/audit_norun/flagged.csv")
+sc = pd.read_csv(f"{tmp}/schemes.csv")
+assert set(sc["condition"]) == {"binary_0.50", "binary_0.90"}, sc["condition"].unique()
+s5 = sc[sc["condition"] == "binary_0.50"].set_index("class")
+assert set(s5.index[s5["kind"] == "new"]) == {"AML_HOX_IDH", "AML_KMT2A_test"}, s5
+assert s5.loc["T-ALL_renamed", "kind"] == "shared"
+po = pd.read_csv(f"{tmp}/run_orig/cv_predictions_binary_0.50.csv")
+pl = pd.read_csv(f"{tmp}/run_locked/cv_predictions_binary_0.50.csv")
+assert s5.loc["AML_KMT2A-r", "n"] == (po["true_label"] == "AML_KMT2A-r").sum() - 5      # 5 moved to the new class
+assert s5.loc["T-ALL_renamed", "n"] == (po["true_label"] == "T-ALL").sum()
+t = pl[pl["true_label"] == "AML_KMT2A_test"]
+assert abs(s5.loc["AML_KMT2A_test", "recall_second"] - (t["prediction"] == "AML_KMT2A_test").mean()) < 1e-3
+assert (s5.loc[s5["kind"] == "shared", "allowed_drop"] >= 0.05 - 1e-9).all()
 print("fifth-round contents ok")
 PY
 step train_pbs_recipe bash -c "grep -q 'locked)' jobs/train.pbs && grep -q 'exclude_classes AML-MR AML_MECOM-r' jobs/train.pbs"

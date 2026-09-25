@@ -131,13 +131,28 @@ Normal marrows are never diluted, so a model trained on diluted leukaemias may c
 
 ## Fifth round: class scheme (locked recipe)
 
-The class scheme is revised from biology and public genotypes, on the training arrays only; the recipe stays `locked`. Evidence and lists: project note `npm1-idh-cluster.md` and the lists in `RELABEL_DIR`.
+The class scheme is revised from biology and public genotypes, on the training arrays only; the recipe stays `locked`. Evidence: project notes `npm1-idh-cluster.md` and `lamprey-marlin-sparsh-comparison.md`. The lists are in `RELABEL_DIR`, one row per sample with its reason.
 
-- **AML_HOX_IDH**: the samples of the island next to AML_IDH in the t-SNE of `AL_24Sep2026` whose IDH1/2 status is known to be mutant (Beat AML 2.0 and TCGA-LAML sequencing; AML_IDH-labelled samples), or unknown with an IDH-type methylation score. This is the analogue of MARLIN's HOX Grp 3 (IDH1/2 & NPM1). Of the sequenced NPM1-mutated cases, 17 of 18 in the island are IDH-mutant and 1 of 90 IDH-wild-type cases lies in it. NPM1-mutated cases with an IDH and a DNMT3A mutation mostly stay in the NPM1 cloud and keep the HOX label. AML_IDH stays a separate class: its main group sits with AML-MR and MECOM-r, and merging it with the island would drop the NPM1 information from the report.
-- **AML_NUP98-NSD1**: HOX-labelled samples with a NUP98::NSD1 fusion in GEO (GSE190931), 50 paediatric samples. They form most of a subcluster that also holds KMT2A::ELL cases, which keep the KMT2A-r label.
-- **Data clean-up**, applied to both runs through the exclusion list and the groups file:
-  - left out: 11 GSE124617 re-deposits of TCGA samples that are in the training set under their TCGA barcode, and 25 post-treatment samples of an IDH-inhibitor study (GSE153347);
-  - grouped by patient, so that a patient never sits on both sides of a split: 126 TARGET patients with a diagnosis and a relapse sample, repeat arrays, Beat AML and TCGA patients with more than one sample.
+- **AML_NPM1_IDH** (20 samples; Lamprey's NPM1_IDH, MARLIN's HOX Grp 3). NPM1-mutated AML with an IDH1 or IDH2 mutation by sequencing (Beat AML 2.0, TCGA-LAML, TARGET) that lies in the island next to AML_IDH in the t-SNE of `AL_24Sep2026`. Of the Beat AML and TCGA NPM1-mutated cases in the island, 17 of 18 are IDH-mutant; of their 90 IDH-wild-type NPM1 cases, 1 lies in it.
+  - The other 13 NPM1- and IDH-mutated cases lie outside the island, 9 of them with a DNMT3A mutation, and keep the HOX label.
+  - Island members whose NPM1 or IDH status is unknown are left out (below).
+  - AML_IDH stays a separate class (IDH-mutated without NPM1). Its main group sits with AML-MR and MECOM-r, and merging it with the new class would drop the NPM1 information from the report.
+- **AML_NUP98-NSD1** (50): HOX-labelled samples with a NUP98::NSD1 fusion in GEO (GSE190931), all paediatric. They form most of a subcluster that also holds KMT2A::ELL cases, which keep the KMT2A-r label.
+- **AML_ETV6-MNX1** (8):
+  - 4 with the fusion in GEO (GSE190931);
+  - 4 TARGET cases with t(7;12)(q36;p13) and trisomy 19 in the TARGET karyotype.
+
+  The 8 form one tight group. AML_ETV6-r keeps 9 samples with other ETV6 rearrangements.
+- **T-ALL_TAL1-like**: T-ALL_TAL1 renamed (Lamprey's name), because the class is a methylation group, mostly CIMP-low, rather than a genotype.
+- **ETV6-rearranged MPAL-T/M** belongs to T-ALL_HOXA9_ETP, as in Lamprey's ETP class. The training set has no such arrays: its only MPAL arrays are 3 TARGET cases with BCL11B activation, which are in AL_BCL11B-r. Nothing moves now; the rule applies to arrays added later.
+- **Data clean-up**, the same in both runs (exclusion list and groups file). Left out (61):
+  - 11 GSE124617 re-deposits of TCGA samples that are in the training set under their TCGA barcode;
+  - 25 post-treatment samples of an IDH-inhibitor study (GSE153347);
+  - 22 island members whose NPM1 or IDH status is unknown;
+  - 2 IDH1-mutated, NPM1-negative island members with KMT2A-PTD;
+  - 1 sample with an ETV6::MNX1 fusion call that lies far from the other 8.
+
+  Samples are grouped by patient, so that a patient never sits on both sides of a split: 170 patients with 340 samples. They are mostly TARGET diagnosis/relapse pairs, plus repeat arrays and Beat AML and TCGA patients with more than one sample.
 
 ```bash
 qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_25Sep jobs/prepare_relabel.pbs
@@ -145,13 +160,36 @@ qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_25Sep jobs/prepar
 CHK=$HOME/sparsh_next_runs/data_checks
 qsub -q h200 -v RECIPE=locked,RUN_NAME=locked_clean,EXCLUDE_IDS=$CHK/exclude_25Sep2026.txt,GROUPS_FILE=$CHK/groups_25Sep2026.csv jobs/train.pbs
 qsub -q h100 -v RECIPE=locked,RUN_NAME=locked_relabel,DATA_PATH=/home/patkarlab/AL_Methylation_Classifier/data/AL_25Sep2026_relabel.pkl,EXCLUDE_IDS=$CHK/exclude_25Sep2026.txt,GROUPS_FILE=$CHK/groups_25Sep2026.csv jobs/train.pbs
+# when both have finished:
+python scripts/compare_class_schemes.py ~/sparsh_next_runs/locked_clean ~/sparsh_next_runs/locked_relabel \
+    --rename T-ALL_TAL1=T-ALL_TAL1-like --output $CHK/round5_rule.csv
 ```
 
-`locked_clean` has the old labels and the clean-up; `locked_relabel` has both. Compare them with `compare_runs.py` (it warns that the class sets differ) and, per class, with `cv_recall_by_class.csv`. **Rule, fixed before the runs:**
+`locked_clean` has the old labels and the clean-up; `locked_relabel` has both. `scripts/compare_class_schemes.py` applies the rule below, from the cross-validation predictions (top-1, as in `cv_recall_by_class.csv`).
 
-- keep a new class if its recall at `binary_0.30` is at least 0.70;
-- and no shared class loses more than 5 points of recall at `binary_0.30`;
-- and the mean recall over the shared classes at `binary_0.30` (balanced accuracy restricted to them, from `cv_recall_by_class.csv`) falls by no more than 1 point.
+**Rule, fixed before the runs.** Two refinements were added on 25 September 2026, before either run was started: shared classes are compared like for like, and small classes may lose one sample.
+
+- Keep a new class if its recall at `binary_0.30` is at least 0.70.
+- No shared class may lose more than 5 points of recall at `binary_0.30`, or one sample where that is more (classes under 20 samples).
+  - A shared class is compared on the samples whose label is the same in both runs, after the TAL1-like rename. So a class that gives members to a new class (HOX, AML_ETV6-r) is judged on the members it keeps.
+- The mean recall over the shared classes at `binary_0.30` (equal class weight, the same samples) may fall by no more than 1 point.
+
+If a shared class fails, the column `errors_second` shows which classes took its samples; the new class that took them is merged back first.
+
+### T-ALL label audit
+
+The T-ALL labels are checked on the training arrays with `scripts/label_audit.py`, which follows Lamprey's label cleaning. It uses two signals:
+
+- agreement with the 20 nearest neighbours in a PCA of the 50,000 most variable CpGs;
+- the cross-validation probability each sample received for its own label in the run `dil`.
+
+Flags are for review; nothing is relabelled automatically. Run it on the original pickle (the default `DATA_PATH`), so that the labels match those of `dil`:
+
+```bash
+qsub -v CLASSES="T-ALL AL_BCL11B",RUN_NAME=dil,ANNOTATIONS=$HOME/sparsh_next_runs/data_checks/relabel_25Sep/tall_annotations.csv,AUDIT_NAME=label_audit_tall jobs/label_audit.pbs
+```
+
+`tall_annotations.csv` gives each sample's source series and, where GEO has it, its CIMP status. For GSE69954 and GSE272021 (192 of the 347 samples), no per-sample genetic subtype is public, so their labels may come from clustering; the project note `lamprey-marlin-sparsh-comparison.md` has the details.
 
 ## Scoring on real nanopore samples
 

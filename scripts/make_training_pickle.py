@@ -7,6 +7,8 @@ Write a new training pickle with per-sample label changes, leaving the input unt
         --relabel relabel_hox_idh.csv relabel_nup98_nsd1.csv
 
 Each --relabel CSV has the columns Sample_ID and new_label, and optionally reason.
+--rename OLD=NEW renames a whole class (every sample whose label is OLD, after the
+per-sample changes); it refuses a class name that is not in the pickle.
 Only the ANNOTATION column changes. The original label is kept in a new column,
 ANNOTATION_ORIGINAL, which training ignores because only cg... columns are read.
 Sample IDs come from the Sample_ID column, or from the index when there is no
@@ -63,6 +65,7 @@ def main():
     ap.add_argument("--data_path", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--relabel", nargs="*", default=[], help="CSV files Sample_ID,new_label[,reason]")
+    ap.add_argument("--rename", nargs="*", default=[], help="Whole-class renames OLD=NEW")
     ap.add_argument("--drop_ids", default=None, help="Optional file of Sample_IDs to remove (one per line, or a CSV "
                                                       "with a Sample_ID column)")
     args = ap.parse_args()
@@ -106,6 +109,20 @@ def main():
                             "new_label": rel["new_label"].to_numpy(), "reason": rel["reason"].to_numpy(),
                             "file": rel["file"].to_numpy()})
     changes = changes[changes["old_label"] != changes["new_label"]]
+
+    for pair in args.rename:
+        if "=" not in pair:
+            sys.exit(f"--rename expects OLD=NEW, got {pair!r}")
+        a, b = (x.strip() for x in pair.split("=", 1))
+        current = df[LABEL].astype(str).str.strip()
+        hit = (current == a).to_numpy()
+        if not hit.any():
+            sys.exit(f"--rename: no sample has the label {a!r}")
+        df.loc[hit, LABEL] = b
+        changes = pd.concat([changes, pd.DataFrame({SAMPLE: ids[hit].to_numpy(), "old_label": a, "new_label": b,
+                                                    "reason": f"class renamed {a} -> {b}", "file": "--rename"})],
+                            ignore_index=True)
+        print(f"Renamed {int(hit.sum())} samples: {a} -> {b}")
 
     if drops:
         keep = ~ids.isin(drops).to_numpy()

@@ -1,0 +1,28 @@
+#!/bin/bash
+#PBS -N sparsh_next_audit
+#PBS -q short
+#PBS -l select=1:ncpus=8:mem=64gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+# Label audit of the training arrays (scripts/label_audit.py). CPU only. Submit from the sparsh-next folder:
+#   qsub -v CLASSES="T-ALL AL_BCL11B",RUN_NAME=dil,ANNOTATIONS=$HOME/sparsh_next_runs/data_checks/relabel_25Sep/tall_annotations.csv,AUDIT_NAME=label_audit_tall jobs/label_audit.pbs
+# CLASSES: label prefixes to audit (empty = all). RUN_NAME: a finished run on the same data, for the CV signal
+# (empty = neighbourhood only). Output: $RUNS_DIR/data_checks/$AUDIT_NAME.
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+[ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
+source "${SETTINGS_FILE:-jobs/settings.sh}"
+CUDA_MODULE=""
+source jobs/common.sh
+require_file DATA_PATH "$DATA_PATH"
+[ -z "${ANNOTATIONS:-}" ] || require_file ANNOTATIONS "$ANNOTATIONS"
+
+# shellcheck disable=SC2086  # CLASSES is a word list
+python scripts/label_audit.py --data_path "$DATA_PATH" \
+    ${EXCLUDE_IDS:+--exclude_ids "$EXCLUDE_IDS"} \
+    ${CLASSES:+--classes $CLASSES} \
+    ${RUN_NAME:+--run "$RUNS_DIR/$RUN_NAME"} \
+    ${ANNOTATIONS:+--annotations "$ANNOTATIONS"} \
+    --out_dir "$RUNS_DIR/data_checks/${AUDIT_NAME:-label_audit}"
+echo "Finished $(date)"

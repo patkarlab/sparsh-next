@@ -68,7 +68,8 @@ models/                  SparseNN and the sparsity simulation
 training/                nested cross-validation
 evaluation/              metrics
 scripts/                 train.py, predict.py, check_data.py, compare_runs.py, ont_coverage.py, gpu_benchmark.py,
-                         make_training_pickle.py, merge_groups.py, npm1_idh_check.py and checks
+                         make_training_pickle.py, merge_groups.py, label_audit.py, compare_class_schemes.py,
+                         npm1_idh_check.py and checks
 jobs/                    PBS jobs; settings.sh holds all paths, check_settings.sh checks them
 tests/                   synthetic data and the smoke test
 docs/                    SETUP.md, EXPERIMENTS.md, STRATEGY.md

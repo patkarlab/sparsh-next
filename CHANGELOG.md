@@ -22,15 +22,22 @@ Development line in a separate repository. Changes are listed against v0.1.0.
 ### Added in the fifth round (25 September 2026)
 
 - `scripts/make_training_pickle.py`: writes a new training pickle with per-sample label changes from CSV files
-  (Sample_ID,new_label,reason), keeps the original label in `ANNOTATION_ORIGINAL`, never overwrites the input,
-  and writes a change log.
+  (Sample_ID,new_label,reason) and whole-class renames (`--rename OLD=NEW`), keeps the original label in
+  `ANNOTATION_ORIGINAL`, never overwrites the input, and writes a change log.
 - `scripts/merge_groups.py`: merges groups files (near-identical arrays) and patient lists (diagnosis and relapse
   samples, repeat arrays) into one groups file for `--groups_file`.
 - `scripts/npm1_idh_check.py`: IDH1/2-mutated against wild-type NPM1 AML on training arrays (differential CpGs,
   cross-validated and cross-cohort AUC, TET2 check, signature score); with `--island` it decides which candidates
-  move to a new class.
-- `jobs/prepare_relabel.pbs` runs the three for the fifth-round class scheme (AML_HOX_IDH, AML_NUP98-NSD1) and the
-  data clean-up. `configs/class_hierarchy.json`: both new classes join the HOX-related family.
+  move to a new class. Kept for reference; class membership is now decided by genotype.
+- `scripts/label_audit.py` and `jobs/label_audit.pbs`: label audit of training arrays after Lamprey's label
+  cleaning (agreement with the nearest neighbours in a PCA, and the cross-validation probability for the own
+  label from a finished run); flags samples for review.
+- `scripts/compare_class_schemes.py`: compares a run with the old labels and one with the new labels on the samples
+  whose label is the same in both, and applies the fifth-round rule.
+- `jobs/prepare_relabel.pbs` applies every `relabel_*.csv` in `RELABEL_DIR` and the class renames, and writes the
+  exclusion list and the patient groups. Class scheme (docs/EXPERIMENTS.md): new classes AML_NPM1_IDH,
+  AML_NUP98-NSD1 and AML_ETV6-MNX1; T-ALL_TAL1 renamed T-ALL_TAL1-like. `configs/class_hierarchy.json`:
+  AML_NPM1_IDH and AML_NUP98-NSD1 join the HOX-related family.
 
 ### Added in the fourth round (24 September 2026)
 
