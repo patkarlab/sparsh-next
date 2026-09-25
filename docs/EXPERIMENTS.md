@@ -191,6 +191,49 @@ qsub -v CLASSES="T-ALL AL_BCL11B",RUN_NAME=dil,ANNOTATIONS=$HOME/sparsh_next_run
 
 `tall_annotations.csv` gives each sample's source series and, where GEO has it, its CIMP status. For GSE69954 and GSE272021 (192 of the 347 samples), no per-sample genetic subtype is public, so their labels may come from clustering; the project note `lamprey-marlin-sparsh-comparison.md` has the details.
 
+## Sixth round: label clean-up (locked recipe, fifth-round scheme)
+
+Training labels are checked against independent genetics and against the methylation itself, on the training arrays only. The evidence is in the project note `lamprey-marlin-sparsh-comparison.md`.
+
+- **Methylation** is `scripts/label_audit.py`, within the lineage and across all samples, with CV from `dil`.
+- **Independent genetics:**
+  - RNA-seq for GSE272021 (GSE272023);
+  - GEO fusion calls (GSE190931);
+  - TARGET clinical data;
+  - GEO karyotype subtypes (GSE49031);
+  - Beat AML and TCGA sequencing.
+
+**Rule, approved on 25 September 2026 before any clean-up run.**
+
+- **Labels with independent genetics:** keep a label only when both the genetics and the methylation support it.
+  - Methylation is taken to contradict a label under Lamprey's rule: at most 1 of the 20 nearest neighbours share the label, and the own-label CV probability is at most 0.05.
+  - Relabel only when the genetics and the methylation agree on another class; otherwise leave the sample out.
+- **Labels from clustering alone** (T-ALL without RNA: GSE69954, GSE147667 and 20 GSE272021 samples): leave the sample out when the own-label CV probability is at most 0.05 and most neighbours carry another label. Never relabel them.
+- **The two lab arrays in the list** (26CGH0740, 25RSEQ247) are dropped, as decided by the user.
+
+The lists are in `relabel_26Sep`:
+- `relabel_cleanup.csv`: 9 relabels;
+- `drop_cleanup.csv`: the 62 samples left out, with reasons;
+- `drop_26Sep2026.txt`: the fifth-round drop list plus the clean-up (123);
+- the three fifth-round relabel files and the patient list.
+
+Run it once the fifth-round verdict keeps all three new classes. If a class is merged back, remove its relabel file from `relabel_26Sep`; the comparison then needs a new base run with the final scheme.
+
+```bash
+R6=$HOME/sparsh_next_runs/data_checks/relabel_26Sep
+qsub -v RELABEL_DIR=$R6,TAG=26Sep2026 jobs/prepare_relabel.pbs
+CHK=$HOME/sparsh_next_runs/data_checks
+qsub -q h200 -v RECIPE=locked,RUN_NAME=locked_cleanup,DATA_PATH=/home/patkarlab/AL_Methylation_Classifier/data/AL_26Sep2026_relabel.pkl,EXCLUDE_IDS=$CHK/exclude_26Sep2026.txt,GROUPS_FILE=$CHK/groups_26Sep2026.csv jobs/train.pbs
+# when it has finished:
+python scripts/compare_class_schemes.py ~/sparsh_next_runs/locked_relabel ~/sparsh_next_runs/locked_cleanup --output $CHK/round6_rule.csv
+```
+
+**Rule for keeping the clean-up**, fixed before the run. This is the fifth-round rule; there are no new classes.
+- Compared on the samples present in both runs with the same label: no shared class may lose more than 5 points of recall at `binary_0.30`, or one sample where that is more.
+- The mean recall over the shared classes may fall by no more than 1 point.
+
+The samples left out or relabelled are not part of this comparison.
+
 ## Scoring on real nanopore samples
 
 Keep a labelled nanopore cohort for one blinded scoring of the chosen model. Every choice (recipe, threshold, preprocessing) is made on cross-validation and on label-free properties of the nanopore files, such as coverage and value type. Run `jobs/predict.pbs` without `TRUTH`; whoever holds the labels scores `predictions.csv`. Comparing several models on the cohort turns it into a selection set and makes its accuracy optimistic; if that is needed, hold part of the cohort back untouched.

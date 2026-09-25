@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/). Versions
 below 1.0.0 may introduce breaking changes in any minor release.
 
+## [Unreleased]
+
+### Sixth round: label clean-up (25 September 2026)
+
+- `jobs/prepare_relabel.pbs` takes `TAG` (default `25Sep2026`), which names the round's drop list, patient list, pickle,
+  exclusion list and groups file. The job stops if any output exists, so one round cannot overwrite the files another
+  round's runs use.
+- `docs/EXPERIMENTS.md`: sixth round, which checks labels against independent genetics and against the methylation.
+  It records the approved rule, the lists (9 relabels, 62 samples left out), the commands and the rule for keeping
+  the clean-up.
+
 ## [0.2.0] — 2026-09-25 (SPARSH-next; strategy locked, see docs/STRATEGY.md)
 
 Development line in a separate repository. Changes are listed against v0.1.0.

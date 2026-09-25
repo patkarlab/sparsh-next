@@ -148,4 +148,20 @@ assert (s5.loc[s5["kind"] == "shared", "allowed_drop"] >= 0.05 - 1e-9).all()
 print("fifth-round contents ok")
 PY
 step train_pbs_recipe bash -c "grep -q 'locked)' jobs/train.pbs && grep -q 'exclude_classes AML-MR AML_MECOM-r' jobs/train.pbs"
+# prepare_relabel.pbs outside PBS, with a stand-in conda: default TAG, refusal to overwrite, a second TAG
+mkdir -p "$TMP/pbs/rel" "$TMP/pbs/conda/etc/profile.d"
+printf 'conda() { export CONDA_DEFAULT_ENV="$2"; }\n' > "$TMP/pbs/conda/etc/profile.d/conda.sh"
+printf 'DATA_PATH=%s\nRUNS_DIR=%s\nEXCLUDE_IDS=\nGROUPS_FILE=\nCONDA_ENV=test\nCONDA_BASE=%s\n' \
+    "$TMP/data/train.pkl" "$TMP/pbs/runs" "$TMP/pbs/conda" > "$TMP/pbs/settings.sh"
+cp "$TMP/relabel_b.csv" "$TMP/pbs/rel/relabel_b.csv"
+for tag in 25Sep2026 26Sep2026; do
+    cut -d, -f1 "$TMP/relabel_b.csv" | sed -n '2,3p' > "$TMP/pbs/rel/drop_$tag.txt"
+    cp "$TMP/patients.csv" "$TMP/pbs/rel/patients_$tag.csv"
+done
+export PBS_ENV="SETTINGS_FILE=$TMP/pbs/settings.sh RELABEL_DIR=$TMP/pbs/rel NEW_DATA_PATH= RENAMES=T-ALL=T-ALL_x"
+step relabel_pbs  bash -c "env $PBS_ENV bash jobs/prepare_relabel.pbs && \
+                      test -f '$TMP/pbs/runs/data_checks/exclude_25Sep2026.txt' && test -f '$TMP/data/AL_25Sep2026_relabel.pkl'"
+step relabel_pbs_again bash -c "env $PBS_ENV bash jobs/prepare_relabel.pbs 2>&1 | grep -q 'exists; choose a new TAG'"
+step relabel_pbs_tag bash -c "env $PBS_ENV TAG=26Sep2026 bash jobs/prepare_relabel.pbs && \
+                      test -f '$TMP/pbs/runs/data_checks/groups_26Sep2026.csv' && test -f '$TMP/data/AL_26Sep2026_relabel.pkl'"
 echo "ROUND 5 CHECKS PASSED"

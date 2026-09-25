@@ -4,16 +4,17 @@
 #PBS -l select=1:ncpus=8:mem=64gb
 #PBS -l walltime=03:00:00
 #PBS -j oe
-# Fifth round (docs/EXPERIMENTS.md): a relabelled training pickle, an exclusion list and a groups file.
-# CPU only. Submit from the sparsh-next folder:
+# Relabelled training pickle, exclusion list and groups file for one round (docs/EXPERIMENTS.md, fifth and sixth
+# rounds). CPU only. Submit from the sparsh-next folder:
 #   qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_25Sep jobs/prepare_relabel.pbs
-# RELABEL_DIR holds the lists; every relabel_*.csv in it is applied (Sample_ID,new_label,reason):
-#   relabel_npm1_idh.csv, relabel_nup98_nsd1.csv, relabel_etv6_mnx1.csv;
-#   drop_25Sep2026.txt (samples left out) and patients_25Sep2026.csv (samples of one patient).
-# RENAMES="OLD=NEW ..." renames whole classes (default: T-ALL_TAL1=T-ALL_TAL1-like). Outputs:
-#   NEW_DATA_PATH                                  the relabelled pickle (the input pickle is not changed)
-#   $RUNS_DIR/data_checks/exclude_25Sep2026.txt    EXCLUDE_IDS plus the drop list
-#   $RUNS_DIR/data_checks/groups_25Sep2026.csv     GROUPS_FILE merged with the patient list
+#   qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_26Sep,TAG=26Sep2026 jobs/prepare_relabel.pbs
+# TAG names the round (default 25Sep2026). RELABEL_DIR holds the lists: every relabel_*.csv in it is applied
+# (Sample_ID,new_label,reason), then drop_${TAG}.txt (samples left out) and patients_${TAG}.csv (samples of one
+# patient) are used. RENAMES="OLD=NEW ..." renames whole classes (default: T-ALL_TAL1=T-ALL_TAL1-like). Outputs:
+#   NEW_DATA_PATH (default: <folder of DATA_PATH>/AL_${TAG}_relabel.pkl)   the relabelled pickle; the input is not changed
+#   $RUNS_DIR/data_checks/exclude_${TAG}.txt                               EXCLUDE_IDS plus the drop list
+#   $RUNS_DIR/data_checks/groups_${TAG}.csv                                GROUPS_FILE merged with the patient list
+# The job stops if any of the three exists, so a round never overwrites the files another round's runs use.
 
 set -eo pipefail
 cd "${PBS_O_WORKDIR:-$(pwd)}"
@@ -22,18 +23,26 @@ source "${SETTINGS_FILE:-jobs/settings.sh}"
 CUDA_MODULE=""
 source jobs/common.sh
 RELABEL_DIR="${RELABEL_DIR:?Set RELABEL_DIR}"
-NEW_DATA_PATH="${NEW_DATA_PATH:-$(dirname "$DATA_PATH")/AL_25Sep2026_relabel.pkl}"
+TAG="${TAG:-25Sep2026}"
+NEW_DATA_PATH="${NEW_DATA_PATH:-$(dirname "$DATA_PATH")/AL_${TAG}_relabel.pkl}"
 RENAMES="${RENAMES-T-ALL_TAL1=T-ALL_TAL1-like}"
-for f in drop_25Sep2026.txt patients_25Sep2026.csv; do
-    require_file "$f" "$RELABEL_DIR/$f" "Copy the lists into $RELABEL_DIR"
+DROP_FILE="$RELABEL_DIR/drop_${TAG}.txt"
+PATIENTS_FILE="$RELABEL_DIR/patients_${TAG}.csv"
+CHECKS="$RUNS_DIR/data_checks"
+EXCLUDE_OUT="$CHECKS/exclude_${TAG}.txt"
+GROUPS_OUT="$CHECKS/groups_${TAG}.csv"
+for f in "$DROP_FILE" "$PATIENTS_FILE"; do
+    require_file "$(basename "$f")" "$f" "Copy the lists into $RELABEL_DIR (TAG=$TAG)"
 done
 require_file DATA_PATH "$DATA_PATH"
+for f in "$NEW_DATA_PATH" "$EXCLUDE_OUT" "$GROUPS_OUT"; do
+    [ ! -e "$f" ] || { echo "ERROR: $f exists; choose a new TAG (or delete it if no run uses it)"; exit 1; }
+done
 shopt -s nullglob
 RELABELS=("$RELABEL_DIR"/relabel_*.csv)
 shopt -u nullglob
 [ ${#RELABELS[@]} -gt 0 ] || { echo "ERROR: no relabel_*.csv in $RELABEL_DIR"; exit 1; }
-echo "Relabel lists: ${RELABELS[*]}"
-CHECKS="$RUNS_DIR/data_checks"
+echo "Round $TAG. Relabel lists: ${RELABELS[*]}"
 mkdir -p "$CHECKS"
 
 echo "== Relabelled pickle"
@@ -42,8 +51,7 @@ python scripts/make_training_pickle.py --data_path "$DATA_PATH" --output "$NEW_D
     --relabel "${RELABELS[@]}" ${RENAMES:+--rename $RENAMES}
 
 echo "== Exclusion list and groups"
-cat ${EXCLUDE_IDS:+"$EXCLUDE_IDS"} "$RELABEL_DIR/drop_25Sep2026.txt" | sed '/^\s*$/d' | sort -u > "$CHECKS/exclude_25Sep2026.txt"
-echo "$(wc -l < "$CHECKS/exclude_25Sep2026.txt") Sample_IDs in $CHECKS/exclude_25Sep2026.txt"
-python scripts/merge_groups.py ${GROUPS_FILE:+--groups "$GROUPS_FILE"} --patients "$RELABEL_DIR/patients_25Sep2026.csv" \
-    --output "$CHECKS/groups_25Sep2026.csv"
+cat ${EXCLUDE_IDS:+"$EXCLUDE_IDS"} "$DROP_FILE" | sed '/^\s*$/d' | sort -u > "$EXCLUDE_OUT"
+echo "$(wc -l < "$EXCLUDE_OUT") Sample_IDs in $EXCLUDE_OUT"
+python scripts/merge_groups.py ${GROUPS_FILE:+--groups "$GROUPS_FILE"} --patients "$PATIENTS_FILE" --output "$GROUPS_OUT"
 echo "Finished $(date)"
