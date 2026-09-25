@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N sparsh_next_relabel
+#PBS -q short
+#PBS -l select=1:ncpus=8:mem=64gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+# Fifth round (docs/EXPERIMENTS.md): a relabelled training pickle, an exclusion list and a groups file.
+# CPU only. Submit from the sparsh-next folder:
+#   qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_25Sep jobs/prepare_relabel.pbs
+# RELABEL_DIR holds the lists: npm1_genotypes.csv, hox_idh_island.csv, relabel_nup98_nsd1.csv,
+# drop_25Sep2026.txt and patients_25Sep2026.csv. Outputs:
+#   NEW_DATA_PATH                       the relabelled pickle (the input pickle is not changed)
+#   $RUNS_DIR/data_checks/exclude_25Sep2026.txt   EXCLUDE_IDS plus the drop list
+#   $RUNS_DIR/data_checks/groups_25Sep2026.csv    GROUPS_FILE merged with the patient list
+#   $RELABEL_DIR/idh_check/             signature check, island decisions and relabel_AML_HOX_IDH.csv
+
+set -eo pipefail
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+[ -f jobs/common.sh ] || { echo "ERROR: submit from the sparsh-next folder (cd ~/projects/sparsh-next)"; exit 1; }
+source "${SETTINGS_FILE:-jobs/settings.sh}"
+CUDA_MODULE=""
+source jobs/common.sh
+RELABEL_DIR="${RELABEL_DIR:?Set RELABEL_DIR}"
+NEW_DATA_PATH="${NEW_DATA_PATH:-$(dirname "$DATA_PATH")/AL_25Sep2026_relabel.pkl}"
+for f in npm1_genotypes.csv hox_idh_island.csv relabel_nup98_nsd1.csv drop_25Sep2026.txt patients_25Sep2026.csv; do
+    require_file "$f" "$RELABEL_DIR/$f" "Copy the lists into $RELABEL_DIR"
+done
+require_file DATA_PATH "$DATA_PATH"
+CHECKS="$RUNS_DIR/data_checks"
+mkdir -p "$CHECKS"
+
+echo "== IDH signature check and island decisions"
+python scripts/npm1_idh_check.py --data_path "$DATA_PATH" --genotypes "$RELABEL_DIR/npm1_genotypes.csv" \
+    --island "$RELABEL_DIR/hox_idh_island.csv" --new_label AML_HOX_IDH --out_dir "$RELABEL_DIR/idh_check"
+
+echo "== Relabelled pickle"
+python scripts/make_training_pickle.py --data_path "$DATA_PATH" --output "$NEW_DATA_PATH" \
+    --relabel "$RELABEL_DIR/idh_check/relabel_AML_HOX_IDH.csv" "$RELABEL_DIR/relabel_nup98_nsd1.csv"
+
+echo "== Exclusion list and groups"
+cat ${EXCLUDE_IDS:+"$EXCLUDE_IDS"} "$RELABEL_DIR/drop_25Sep2026.txt" | sed '/^\s*$/d' | sort -u > "$CHECKS/exclude_25Sep2026.txt"
+echo "$(wc -l < "$CHECKS/exclude_25Sep2026.txt") Sample_IDs in $CHECKS/exclude_25Sep2026.txt"
+python scripts/merge_groups.py ${GROUPS_FILE:+--groups "$GROUPS_FILE"} --patients "$RELABEL_DIR/patients_25Sep2026.csv" \
+    --output "$CHECKS/groups_25Sep2026.csv"
+echo "Finished $(date)"

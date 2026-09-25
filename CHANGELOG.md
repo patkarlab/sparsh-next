@@ -6,9 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/). Versions
 below 1.0.0 may introduce breaking changes in any minor release.
 
-## [0.2.0.dev0] — unreleased (SPARSH-next)
+## [0.2.0] — 2026-09-25 (SPARSH-next; strategy locked, see docs/STRATEGY.md)
 
 Development line in a separate repository. Changes are listed against v0.1.0.
+
+### Locked strategy (25 September 2026)
+
+- `docs/STRATEGY.md` fixes the training and reporting strategy: the fourth-round run `dil` with AML-MR and
+  AML_MECOM-r left out, now the recipe `locked` in `jobs/train.pbs`. It records the evidence (cross-validation
+  on training arrays; the user's scoring of the validation cohort, for reporting only) and the rules for later
+  changes.
+- `docs/EXPERIMENTS.md`: the nanopore samples are the validation cohort, not a development set; the dilution
+  rule no longer weights rows by properties of the validation cohort; fourth-round result added.
+
+### Added in the fifth round (25 September 2026)
+
+- `scripts/make_training_pickle.py`: writes a new training pickle with per-sample label changes from CSV files
+  (Sample_ID,new_label,reason), keeps the original label in `ANNOTATION_ORIGINAL`, never overwrites the input,
+  and writes a change log.
+- `scripts/merge_groups.py`: merges groups files (near-identical arrays) and patient lists (diagnosis and relapse
+  samples, repeat arrays) into one groups file for `--groups_file`.
+- `scripts/npm1_idh_check.py`: IDH1/2-mutated against wild-type NPM1 AML on training arrays (differential CpGs,
+  cross-validated and cross-cohort AUC, TET2 check, signature score); with `--island` it decides which candidates
+  move to a new class.
+- `jobs/prepare_relabel.pbs` runs the three for the fifth-round class scheme (AML_HOX_IDH, AML_NUP98-NSD1) and the
+  data clean-up. `configs/class_hierarchy.json`: both new classes join the HOX-related family.
 
 ### Added in the fourth round (24 September 2026)
 

@@ -15,7 +15,7 @@
 # scaled_schedule, or final (default recipe plus one extra model on all samples); or, matched to the lab's
 # nanopore files (0/1 values, coverage up to 87%): wide, scaled_wide, scaled_wide_log; third round:
 # scaled_wide_err, scaled_wide_aml_other, scaled_wide_aml_other_err; fourth round: scaled_wide_dil_base,
-# scaled_wide_dil. See docs/EXPERIMENTS.md.
+# scaled_wide_dil; locked: the strategy fixed on 25 September 2026 (docs/STRATEGY.md). See docs/EXPERIMENTS.md.
 # Optional: RUN_NAME=... (folder name; defaults to the recipe name), SEED=... (default 42), and
 # EXTRA_ARGS="..." for any other scripts/train.py option, for example
 #   qsub -v RECIPE=default,RUN_NAME=default_seed43,SEED=43 jobs/train.pbs
@@ -48,6 +48,9 @@ AML_OTHER="--label_map configs/label_map_aml_other.json"
 # diluted to 20-100% blasts, and the inner validation sets likewise.
 DIL_EVAL="--eval_blasts 1 0.5 0.3 --eval_sims binary"
 DIL="--dilution_prob 0.5 --blast_min 0.2 --val_dilution $DIL_EVAL"
+# Locked strategy (docs/STRATEGY.md): the fourth-round run "dil" of 25 September 2026, with AML-MR and
+# AML_MECOM-r left out as they were in that run. An EXTRA_ARGS "--exclude_classes ..." replaces this list.
+LOCKED="$WIDE --coverage_dist uniform --input_encoding scaled $DIL --exclude_classes AML-MR AML_MECOM-r"
 
 RECIPE="${RECIPE:-default}"
 case "$RECIPE" in
@@ -66,6 +69,7 @@ case "$RECIPE" in
   scaled_wide_aml_other_err) RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $AML_OTHER $ERR" ;;
   scaled_wide_dil_base)      RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $DIL_EVAL" ;;
   scaled_wide_dil)           RECIPE_ARGS="$WIDE --coverage_dist uniform --input_encoding scaled $DIL" ;;
+  locked)                    RECIPE_ARGS="$LOCKED" ;;
   *) echo "Unknown RECIPE: $RECIPE"; exit 1 ;;
 esac
 RUN_NAME="${RUN_NAME:-$RECIPE}"

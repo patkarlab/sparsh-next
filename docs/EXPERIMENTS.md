@@ -74,7 +74,7 @@ The row *your ONT samples* places every sample's coverage between the two neares
 
 ## Third round: call errors, grouped classes, reported call
 
-The blinded nanopore scoring of 24 September 2026 (summary only: 207 samples with truth, model without AML-MR and AML_MECOM-r) found that real samples confuse classes the way simulated data at much lower coverage do, and that most confident errors were diagnoses with no model class. Three changes follow; the 254 nanopore samples informed them, so they are now a development set, and an independent estimate of the result needs new samples.
+The blinded nanopore scoring of 24 September 2026 (summary only: 207 samples with truth, model without AML-MR and AML_MECOM-r) found that real samples confuse classes the way simulated data at much lower coverage do, and that most confident errors were diagnoses with no model class. Three changes follow. The nanopore samples are the validation cohort: from 25 September 2026 no code, architecture or preprocessing change may be based on their results (docs/STRATEGY.md). Because a summary of their scoring motivated this round, an independent estimate of its result needs new samples.
 
 **1. Measure the call error (label-free).** `qsub -v RUN_NAME=scaled_wide,ONT_DIR=/path/to/ont_folder jobs/ont_call_error.pbs`. At CpGs methylated (or unmethylated) in almost every training array, whatever the subtype, a nanopore call that disagrees with the arrays is an error of the nanopore data. The log gives the *matched call error*: the simulated per-read error rate that produces the same disagreement. The recipes below assume about 10%. If the measured rate is clearly different, pass `EXTRA_ARGS="--val_call_error <rate> --call_error_max <twice the rate> --eval_call_errors 0 <rate>"`. If it is near zero, call errors do not explain the lost accuracy (dilution by normal cells and array-to-nanopore differences at subtype-specific CpGs remain), and the error recipes are not expected to help.
 
@@ -125,7 +125,33 @@ qsub -q h100 -v RECIPE=scaled_wide_dil,RUN_NAME=dil,EXTRA_ARGS="--exclude_classe
 
 Normal marrows are never diluted, so a model trained on diluted leukaemias may call more normal marrows leukaemia: check `Normal_Control_BM` in `cv_recall_by_class.csv`. On synthetic data the gain at 30–50% blasts was large and the cost to the stand-in partner class was clear, so this row matters.
 
-**3. Suggested rule, to fix before looking** (binary rows expected on the cohort's coverage mix): adopt dilution if balanced accuracy improves by at least 2 points at both 50% and 30% blasts, falls by no more than 1 point undiluted, and Normal_Control_BM recall at `binary_0.30` falls by no more than 5 points. Weigh the 50% and 30% rows by the blast percentages of your nanopore cohort, which you hold.
+**3. Rule, fixed before looking** (binary rows, the equal-weight mean over coverages): adopt dilution if balanced accuracy improves by at least 2 points at both 50% and 30% blasts, falls by no more than 1 point undiluted, and Normal_Control_BM recall at `binary_0.30` falls by no more than 5 points. The 50% and 30% rows count equally; nothing is weighted by properties of the validation cohort.
+
+**Result (25 September 2026, `dil_base` against `dil`, 30 classes).** Balanced accuracy, mean over coverages: undiluted 0.878 → 0.900, 50% blasts 0.569 → 0.835, 30% blasts 0.153 → 0.718; Normal_Control_BM recall at `binary_0.30` 0.960 → 0.944. All four conditions are met and dilution is adopted. Without it, 64% of leukaemias at 30% blasts were called normal marrow (4.6% with it). Cost outside the rule: the callable share at 98% accuracy of calls, undiluted, fell from 0.71 to 0.64. The recipe is locked as `locked` (docs/STRATEGY.md).
+
+## Fifth round: class scheme (locked recipe)
+
+The class scheme is revised from biology and public genotypes, on the training arrays only; the recipe stays `locked`. Evidence and lists: project note `npm1-idh-cluster.md` and the lists in `RELABEL_DIR`.
+
+- **AML_HOX_IDH**: the samples of the island next to AML_IDH in the t-SNE of `AL_24Sep2026` whose IDH1/2 status is known to be mutant (Beat AML 2.0 and TCGA-LAML sequencing; AML_IDH-labelled samples), or unknown with an IDH-type methylation score. This is the analogue of MARLIN's HOX Grp 3 (IDH1/2 & NPM1). Of the sequenced NPM1-mutated cases, 17 of 18 in the island are IDH-mutant and 1 of 90 IDH-wild-type cases lies in it. NPM1-mutated cases with an IDH and a DNMT3A mutation mostly stay in the NPM1 cloud and keep the HOX label. AML_IDH stays a separate class: its main group sits with AML-MR and MECOM-r, and merging it with the island would drop the NPM1 information from the report.
+- **AML_NUP98-NSD1**: HOX-labelled samples with a NUP98::NSD1 fusion in GEO (GSE190931), 50 paediatric samples. They form most of a subcluster that also holds KMT2A::ELL cases, which keep the KMT2A-r label.
+- **Data clean-up**, applied to both runs through the exclusion list and the groups file:
+  - left out: 11 GSE124617 re-deposits of TCGA samples that are in the training set under their TCGA barcode, and 25 post-treatment samples of an IDH-inhibitor study (GSE153347);
+  - grouped by patient, so that a patient never sits on both sides of a split: 126 TARGET patients with a diagnosis and a relapse sample, repeat arrays, Beat AML and TCGA patients with more than one sample.
+
+```bash
+qsub -v RELABEL_DIR=$HOME/sparsh_next_runs/data_checks/relabel_25Sep jobs/prepare_relabel.pbs
+# then, with the files it writes:
+CHK=$HOME/sparsh_next_runs/data_checks
+qsub -q h200 -v RECIPE=locked,RUN_NAME=locked_clean,EXCLUDE_IDS=$CHK/exclude_25Sep2026.txt,GROUPS_FILE=$CHK/groups_25Sep2026.csv jobs/train.pbs
+qsub -q h100 -v RECIPE=locked,RUN_NAME=locked_relabel,DATA_PATH=/home/patkarlab/AL_Methylation_Classifier/data/AL_25Sep2026_relabel.pkl,EXCLUDE_IDS=$CHK/exclude_25Sep2026.txt,GROUPS_FILE=$CHK/groups_25Sep2026.csv jobs/train.pbs
+```
+
+`locked_clean` has the old labels and the clean-up; `locked_relabel` has both. Compare them with `compare_runs.py` (it warns that the class sets differ) and, per class, with `cv_recall_by_class.csv`. **Rule, fixed before the runs:**
+
+- keep a new class if its recall at `binary_0.30` is at least 0.70;
+- and no shared class loses more than 5 points of recall at `binary_0.30`;
+- and the mean recall over the shared classes at `binary_0.30` (balanced accuracy restricted to them, from `cv_recall_by_class.csv`) falls by no more than 1 point.
 
 ## Scoring on real nanopore samples
 

@@ -16,7 +16,9 @@
     "AML, HOX-related (NPM1, NUP98, DEK::NUP214, UBTF or KMT2A-r)": [
       "AML_HOXdys_NPM1_NUP98_DEK-NUP214_UBTF",
       "AML_mutated_NPM1_Nup98_DEKnup214",
-      "AML_KMT2A-r"
+      "AML_KMT2A-r",
+      "AML_HOX_IDH",
+      "AML_NUP98-NSD1"
     ],
     "T-ALL, other than TAL1 (HOXA/ETP, TLX1, TLX3 or NKX2)": [
       "T-ALL_HOXA9_ETP",

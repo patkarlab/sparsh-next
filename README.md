@@ -24,7 +24,7 @@ The first commit of this repository is SPARSH v0.1.0 (patkarlab/sparsh, commit 0
 
 ## Quick start
 
-Full server setup, step by step: [docs/SETUP.md](docs/SETUP.md). Which runs to do and how to read them: [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+Full server setup, step by step: [docs/SETUP.md](docs/SETUP.md). Which runs to do and how to read them: [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The strategy locked on 25 September 2026 and the rules for changing it: [docs/STRATEGY.md](docs/STRATEGY.md).
 
 ```bash
 bash tests/smoke_test.sh                  # about 1 minute on CPU; must print SMOKE TEST PASSED
@@ -67,10 +67,11 @@ data/                    training-data loader and the single ONT loader
 models/                  SparseNN and the sparsity simulation
 training/                nested cross-validation
 evaluation/              metrics
-scripts/                 train.py, predict.py, check_data.py, compare_runs.py, ont_coverage.py, gpu_benchmark.py
+scripts/                 train.py, predict.py, check_data.py, compare_runs.py, ont_coverage.py, gpu_benchmark.py,
+                         make_training_pickle.py, merge_groups.py, npm1_idh_check.py and checks
 jobs/                    PBS jobs; settings.sh holds all paths, check_settings.sh checks them
 tests/                   synthetic data and the smoke test
-docs/                    SETUP.md, EXPERIMENTS.md
+docs/                    SETUP.md, EXPERIMENTS.md, STRATEGY.md
 ```
 
 ## Licence
