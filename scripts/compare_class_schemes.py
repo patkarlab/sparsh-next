@@ -16,9 +16,13 @@ top-1, as in cv_recall_by_class.csv.
 
 Rule, per --conditions (default binary_0.30): a new class passes if its recall is at least
 --min_new_recall (0.70); each shared class may lose at most --max_class_drop (5 points) or
-one sample, whichever is larger; the mean recall over the shared classes (equal weight) may
-fall by at most --max_mean_drop (1 point). For a shared class that fails, the table of where
-its lost samples went shows which new class took them.
+--allowed_samples samples (default 1), whichever is larger; the mean recall over the shared
+classes (equal weight) may fall by at most --max_mean_drop (1 point).
+
+A shared class that fails counts against a new class only when it lost samples to that new
+class (the amendment of 25 September 2026, docs/EXPERIMENTS.md). Other failing shared classes
+are reported but block no new class. With no new classes (a clean-up round), the change is
+kept only when no shared class fails and the mean criterion holds.
 
 Output: one row per class and condition (--output), and a printed summary.
 """
@@ -53,7 +57,7 @@ def compare(a: pd.DataFrame, b: pd.DataFrame, args, condition: str):
     classes_a = set(a["true_label"])
     new_classes = sorted(set(b["true_label"]) - classes_a)
 
-    rows = []
+    rows, lost_to = [], {}
     for c in new_classes:
         s = b[b["true_label"] == c]
         recall = float((s["prediction"] == c).mean())
@@ -65,8 +69,9 @@ def compare(a: pd.DataFrame, b: pd.DataFrame, args, condition: str):
     for c, s in unchanged.groupby("true_label_b"):
         ra = float((s["prediction_a"] == c).mean())
         rb = float((s["prediction_b"] == c).mean())
-        allowed = max(args.max_class_drop, 1.0 / len(s))
+        allowed = max(args.max_class_drop, args.allowed_samples / len(s))
         lost = s[(s["prediction_a"] == c) & (s["prediction_b"] != c)]["prediction_b"].value_counts()
+        lost_to[c] = lost
         rows.append({"condition": condition, "class": c, "kind": "shared", "n": len(s), "recall_first": ra,
                      "recall_second": rb, "change": rb - ra, "allowed_drop": allowed,
                      "passes": ra - rb <= allowed + 1e-9,
@@ -74,11 +79,16 @@ def compare(a: pd.DataFrame, b: pd.DataFrame, args, condition: str):
     table = pd.DataFrame(rows)
     shared = table[table["kind"] == "shared"]
     mean_a, mean_b = shared["recall_first"].mean(), shared["recall_second"].mean()
+    failing = shared.loc[~shared["passes"], "class"].tolist()
+    # amendment: a failing shared class counts against the new classes that took its lost samples
+    blame = {c: [f for f in failing if lost_to[f].get(c, 0) > 0] for c in new_classes}
     verdict = {
         "shared_classes_pass": bool(shared["passes"].all()),
         "mean_shared_first": mean_a, "mean_shared_second": mean_b,
         "mean_shared_pass": bool(mean_a - mean_b <= args.max_mean_drop + 1e-9),
         "moved": moved.groupby(["true_label_a", "true_label_b"]).size(),
+        "blame": blame, "lost_to": lost_to,
+        "unattributed": [f for f in failing if not any(f in v for v in blame.values())],
     }
     return table, verdict
 
@@ -91,6 +101,8 @@ def main():
     ap.add_argument("--conditions", nargs="*", default=["binary_0.30"])
     ap.add_argument("--min_new_recall", type=float, default=0.70)
     ap.add_argument("--max_class_drop", type=float, default=0.05)
+    ap.add_argument("--allowed_samples", type=int, default=1,
+                    help="A shared class may always lose this many samples (default 1; 2 in the sixth round)")
     ap.add_argument("--max_mean_drop", type=float, default=0.01)
     ap.add_argument("--output", default=None, help="CSV, one row per class and condition")
     args = ap.parse_args()
@@ -120,19 +132,30 @@ def main():
         for col in ("recall_first", "recall_second", "change", "allowed_drop"):
             show[col] = show[col].map(lambda x: "" if pd.isna(x) else f"{x:.3f}")
         print(show.drop(columns="condition").to_string(index=False))
-        shared_ok = v["shared_classes_pass"] and v["mean_shared_pass"]
-        print(f"\nShared classes, none loses more than max({args.max_class_drop:.2f}, one sample): "
+        samples = "one sample" if args.allowed_samples == 1 else f"{args.allowed_samples} samples"
+        print(f"\nShared classes, none loses more than max({args.max_class_drop:.2f}, {samples}): "
               f"{'yes' if v['shared_classes_pass'] else 'NO'}")
         print(f"Mean recall over shared classes: {v['mean_shared_first']:.4f} -> {v['mean_shared_second']:.4f} "
               f"(may fall by {args.max_mean_drop:.2f}): {'yes' if v['mean_shared_pass'] else 'NO'}")
-        for _, r in table[table["kind"] == "new"].iterrows():
+        new_rows = table[table["kind"] == "new"]
+        for _, r in new_rows.iterrows():
+            took = v["blame"][r["class"]]
             if not r["passes"]:
                 what = f"recall below {args.min_new_recall:.2f}: merge it back"
-            elif shared_ok:
-                what = "keep"
+            elif not v["mean_shared_pass"]:
+                what = "the mean over shared classes falls too far: merge it back"
+            elif took:
+                what = "merge it back: " + "; ".join(
+                    f"{f} lost {int(v['lost_to'][f][r['class']])} to it and fails" for f in took)
             else:
-                what = "recall passes, but the shared-class criteria fail (see errors_second for where samples went)"
+                what = "keep"
             print(f"  {r['class']}: recall {r['recall_second']:.3f}, {what}")
+        if v["unattributed"]:
+            print("  Failing shared classes that lost no samples to a new class (reported; they block "
+                  + ("no new class): " if len(new_rows) else "the change): ") + ", ".join(v["unattributed"]))
+        if not len(new_rows):
+            keep = v["shared_classes_pass"] and v["mean_shared_pass"]
+            print(f"  No new classes: {'keep the change' if keep else 'the change fails the rule'}")
     if args.output:
         out = Path(args.output).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)

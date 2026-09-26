@@ -82,6 +82,45 @@ step schemes      python scripts/compare_class_schemes.py "$TMP/run_orig" "$TMP/
                       --rename T-ALL=T-ALL_renamed --conditions binary_0.50 binary_0.90 --output "$TMP/schemes.csv"
 step schemes_bad  bash -c "python scripts/compare_class_schemes.py '$TMP/run_orig' '$TMP/run_locked' \
                       --rename NO_SUCH_CLASS=X --conditions binary_0.50 2>&1 | grep -q 'not a class'"
+step schemes_rule python - "$TMP" <<'PY'
+# The rule on hand-made predictions: attribution of failing shared classes (amendment of 25 September 2026),
+# --allowed_samples, and a round without new classes.
+import subprocess
+import sys
+from pathlib import Path
+import pandas as pd
+tmp = Path(sys.argv[1]) / "rule"
+def write(name, rows):
+    d = tmp / name
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=["sample_id", "true_label", "prediction"]).to_csv(d / "cv_predictions_binary_0.30.csv", index=False)
+old = [(f"s{i:02d}", c, c) for c, r in (("A", range(1, 11)), ("B", range(11, 21)), ("C", range(21, 31)),
+                                        ("D", range(31, 41))) for i in r]
+new = []
+for s, t, _ in old:
+    i = int(s[1:])
+    t2 = "D_new" if 31 <= i <= 35 else t
+    p = "D_new" if i in (1, 2) else ("C" if i in (11, 12) else t2)   # A loses 2 to D_new, B loses 2 to C
+    new.append((s, t2, p))
+noc = [(s, t, "C" if s in ("s11", "s12") else p) for s, t, p in old]  # no new class; B loses 2 to C
+write("a", old); write("b", new); write("c", noc)
+def run(first, second, *extra):
+    r = subprocess.run([sys.executable, "scripts/compare_class_schemes.py", str(tmp / first), str(tmp / second),
+                        "--max_mean_drop", "0.5", *extra], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+out = run("a", "b")
+assert "D_new: recall 1.000, merge it back: A lost 2 to it and fails" in out, out
+assert "block no new class): B" in out, out
+out = run("a", "b", "--allowed_samples", "2")
+assert "D_new: recall 1.000, keep" in out and "max(0.05, 2 samples): yes" in out, out
+assert "Failing shared classes" not in out, out
+out = run("a", "c")
+assert "No new classes: the change fails the rule" in out and "block the change): B" in out, out
+out = run("a", "c", "--allowed_samples", "2")
+assert "No new classes: keep the change" in out, out
+print("rule checks ok")
+PY
 step audit        python scripts/label_audit.py --data_path "$TMP/new.pkl" --classes AML B-ALL_High \
                       --run "$TMP/run_locked" --n_cpgs 2000 --n_pcs 10 --k 5 --out_dir "$TMP/audit"
 step audit_norun  python scripts/label_audit.py --data_path "$TMP/data/train.pkl" --n_cpgs 1000 --n_pcs 5 --k 5 \

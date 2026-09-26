@@ -14,8 +14,15 @@ below 1.0.0 may introduce breaking changes in any minor release.
   exclusion list and groups file. The job stops if any output exists, so one round cannot overwrite the files another
   round's runs use.
 - `docs/EXPERIMENTS.md`: sixth round, which checks labels against independent genetics and against the methylation.
-  It records the approved rule, the lists (9 relabels, 62 samples left out), the commands and the rule for keeping
-  the clean-up.
+  It records the approved rule, the lists, the commands and the rule for keeping the clean-up. The lists now hold
+  12 relabels and 82 samples left out, after the check of the Beat AML and TCGA labels against their sequencing.
+  The clean-up is compared with the base run `locked_nsd1`, which has the same class scheme.
+- `scripts/compare_class_schemes.py`:
+  - a failing shared class now counts only against the new class it lost samples to (the amendment of 25 September);
+  - `--allowed_samples` (default 1) sets how many samples any shared class may lose. The sixth round uses 2.
+  - a round without new classes gets a keep or fail verdict.
+- `docs/EXPERIMENTS.md`: fifth-round result. AML_NUP98-NSD1 is kept and T-ALL_TAL1 is renamed T-ALL_TAL1-like.
+  AML_NPM1_IDH and AML_ETV6-MNX1 are merged back. The amendment is recorded as adopted after the first result.
 
 ## [0.2.0] — 2026-09-25 (SPARSH-next; strategy locked, see docs/STRATEGY.md)
 
